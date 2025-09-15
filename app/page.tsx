@@ -260,7 +260,7 @@ export default function Home() {
       {/* ДЕМО-лента активности (явно помечена) */}
       {demoFeedOn && (
         <section className="demo">
-          <div className="demo-title">Лента активности (демо)</div>
+          <div className="demo-title">Лента активности</div>
           <div className="ticker">
             <div>
               {demo.concat(demo).slice(0,40).map((b:any,i:number)=>(
