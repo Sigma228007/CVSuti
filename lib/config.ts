@@ -3,25 +3,19 @@ export const MAX_BET = 10_000;
 export const MIN_CHANCE = 1;
 export const MAX_CHANCE = 95;
 
+// дом. преимущество в базисных пунктах (1.50% по умолчанию)
 export const HOUSE_EDGE_BP = Number(process.env.HOUSE_EDGE_BP ?? 150);
 
-/**
- * Возвращает базовый публичный URL приложения.
- * Приоритет:
- * 1) NEXT_PUBLIC_BASE_URL (задаётся вручную в Vercel → Environment Variables)
- * 2) VERCEL_URL (автоматически в рантайме Vercel)
- * 3) локальный адрес (http://localhost:3000)
- */
-export function getBaseUrl(): string {
-  const explicit = process.env.NEXT_PUBLIC_BASE_URL?.trim();
-  if (explicit && explicit.length > 0) {
-    return explicit.replace(/\/$/, "");
+/** База для формирования абсолютных ссылок в уведомлениях админам */
+export function getBaseUrl() {
+  // при прод-сборке – из переменной окружения
+  const env = process.env.NEXT_PUBLIC_BASE_URL || process.env.VERCEL_URL;
+  if (env) {
+    // на Vercel VERCEL_URL без схемы
+    if (/^https?:\/\//i.test(env)) return env.replace(/\/+$/, "");
+    return `https://${env}`.replace(/\/+$/, "");
   }
 
-  const vercel = process.env.VERCEL_URL?.trim();
-  if (vercel && vercel.length > 0) {
-    return `https://${vercel}`.replace(/\/$/, "");
-  }
-
+  // fallback для локалки
   return "http://localhost:3000";
 }

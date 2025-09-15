@@ -1,70 +1,88 @@
 import crypto from "crypto";
 
-/** ---- Telegram initData ---- */
-
+/** Что мы парсим из initData Telegram WebApp */
 export type TelegramInitParsed = {
-  user?: string;
+  [k: string]: string | undefined; // <-- тут исправлено
+  user?: any;
   hash?: string;
-} & Record<string, string | undefined>;
+  signature?: string;
+};
 
+/** Разбор initData-строки из Telegram WebApp */
 export function parseInitData(initData: string): TelegramInitParsed {
   const sp = new URLSearchParams(initData || "");
-  const obj: Record<string, string | undefined> = {};
-  sp.forEach((v, k) => { obj[k] = v; });
-  if (obj.user) {
-    try { obj.user = JSON.parse(obj.user as string); } catch { /* ignore */ }
+  const out: Record<string, string> = {};
+  sp.forEach((v, k) => (out[k] = v));
+  if (out.user) {
+    try {
+      (out as any).user = JSON.parse(out.user);
+    } catch {
+      /* ignore */
+    }
   }
-  return obj as any;
+  return out as TelegramInitParsed;
 }
 
+/** Проверка initData (документация Telegram) */
 export function verifyInitData(initData: string, botToken: string) {
+  if (!initData || !botToken) return null;
+
   const data = parseInitData(initData);
-  const { hash, ...rest } = data as any;
-  if (!hash) return null;
+  const received = (data.hash || data.signature || "").toLowerCase();
+  if (!received) return null;
 
-  const checkArr = Object.keys(rest)
+  const entries = Object.entries(data)
+    .filter(([k]) => k !== "hash" && k !== "signature")
+    .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
     .sort()
-    .map(k => `${k}=${typeof (rest as any)[k] === "string" ? (rest as any)[k] : JSON.stringify((rest as any)[k])}`);
-  const dataCheckString = checkArr.join("\n");
+    .join("\n");
 
-  const secret = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
-  const signature = crypto.createHmac("sha256", secret).update(dataCheckString).digest("hex");
+  const secret = crypto
+    .createHmac("sha256", "WebAppData")
+    .update(botToken)
+    .digest();
 
-  if (signature !== hash) return null;
+  const expected = crypto.createHmac("sha256", secret).update(entries).digest("hex");
 
-  const user = (rest as any).user;
-  try {
-    const u = typeof user === "string" ? JSON.parse(user) : user;
-    return u && typeof u.id === "number" ? { id: u.id } : null;
-  } catch { return null; }
+  const ok =
+    expected.length === received.length &&
+    crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(received, "hex"));
+
+  if (!ok) return null;
+  return { ...data, user: (data as any).user };
 }
 
-/** ---- Admin HMAC for approve/decline links (stateless) ---- */
-
-export type AdminLinkPayload = { id: string; userId: number; amount: number };
-
-function buildDataString(p: AdminLinkPayload) {
-  return `${p.id}:${p.userId}:${p.amount}`;
+/** Подпись payload для админских ссылок */
+export function signAdminPayload(
+  dep: { id: string; userId: number; amount: number },
+  key: string
+) {
+  const payload = `${dep.id}|${dep.userId}|${dep.amount}`;
+  return crypto.createHmac("sha256", key || "").update(payload).digest("hex");
 }
 
-export function signAdminPayload(p: AdminLinkPayload, key: string) {
-  return crypto.createHmac("sha256", key).update(buildDataString(p)).digest("hex");
-}
+/** Проверка параметров из админской ссылки approve/decline */
+export function verifyAdminLink(query: {
+  id?: string;
+  user?: string | number;
+  amount?: string | number;
+  sig?: string;
+}) {
+  const id = String(query.id || "");
+  const userId = Number(query.user);
+  const amount = Number(query.amount);
+  const sig = String(query.sig || "");
 
-export function verifyAdminLink(q: {
-  id?: string | null; user?: string | null; amount?: string | null; sig?: string | null;
-}, key: string): AdminLinkPayload | null {
-  const id = q.id ?? "";
-  const user = q.user ?? "";
-  const amount = q.amount ?? "";
-  const sig = q.sig ?? "";
+  if (!id || !userId || !amount || !sig) return { ok: false as const };
 
-  if (!id || !user || !amount || !sig) return null;
+  const key = process.env.ADMIN_SIGN_KEY || "";
+  const payload = `${id}|${userId}|${amount}`;
+  const expected = crypto.createHmac("sha256", key).update(payload).digest("hex");
 
-  const payload = { id: String(id), userId: Number(user), amount: Number(amount) };
-  if (!Number.isFinite(payload.userId) || !Number.isFinite(payload.amount)) return null;
+  const ok =
+    expected.length === sig.length &&
+    crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(sig, "hex"));
 
-  const calc = signAdminPayload(payload, key);
-  if (calc !== sig) return null;
-  return payload;
+  if (!ok) return { ok: false as const };
+  return { ok: true as const, id, userId, amount };
 }
