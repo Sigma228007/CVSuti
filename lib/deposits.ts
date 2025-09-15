@@ -1,40 +1,71 @@
-export type Deposit = {
-  id: string;
-  userId: number;
-  amount: number;
-  status: 'pending' | 'approved' | 'declined';
-  createdAt: number;
-};
+export type DepositStatus = 'pending' | 'approved' | 'declined'
 
-// простая in-memory коллекция (в проде замените на БД)
-const deposits: Deposit[] = [];
+export interface Deposit {
+  id: string
+  userId: number
+  amount: number
+  status: DepositStatus
+  createdAt: number
+}
 
+const _deposits: Deposit[] = []
+
+function genId(userId: number) {
+  return `dep_${Date.now()}_${userId}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** Создать новый депозит (pending) */
 export function createDeposit(userId: number, amount: number): Deposit {
   const dep: Deposit = {
-    id: `dep_${Date.now()}_${userId}_${Math.random().toString(36).slice(2, 6)}`,
+    id: genId(userId),
     userId,
     amount,
     status: 'pending',
-    createdAt: Date.now(),
-  };
-  deposits.push(dep);
-  return dep;
+    createdAt: Date.now()
+  }
+  _deposits.unshift(dep)
+  return dep
 }
 
-export function getDeposit(id: string): Deposit | undefined {
-  return deposits.find((d) => d.id === id);
+/** Получить по id */
+export function getDepositById(id: string): Deposit | undefined {
+  return _deposits.find(d => d.id === id)
 }
 
-export function markDeposit(id: string, status: 'approved' | 'declined') {
-  const dep = getDeposit(id);
-  if (dep) dep.status = status;
-  return dep;
+/** Одобрить депозит (если ещё pending) */
+export function approveDeposit(id: string): Deposit | null {
+  const dep = getDepositById(id)
+  if (!dep) return null
+  if (dep.status !== 'pending') return dep
+  dep.status = 'approved'
+  return dep
 }
 
+/** Отклонить депозит (если ещё pending) */
+export function declineDeposit(id: string): Deposit | null {
+  const dep = getDepositById(id)
+  if (!dep) return null
+  if (dep.status !== 'pending') return dep
+  dep.status = 'declined'
+  return dep
+}
+
+/** Показать все «ожидающие» депозиты пользователя (для UI) */
 export function getPendingForUser(userId: number): Deposit[] {
-  return deposits.filter((d) => d.userId === userId && d.status === 'pending');
+  return _deposits.filter(d => d.userId === userId && d.status === 'pending')
+}
+export function getDeposit(id: string) {
+  return getDepositById(id)
 }
 
-export function getAllPending(): Deposit[] {
-  return deposits.filter((d) => d.status === 'pending');
+// Было: markDeposit(id, 'approved' | 'declined') — теперь:
+export function markDeposit(
+  id: string,
+  status: 'approved' | 'declined'
+) {
+  if (status === 'approved') {
+    return approveDeposit(id)
+  } else {
+    return declineDeposit(id)
+  }
 }
