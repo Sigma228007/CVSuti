@@ -1,47 +1,50 @@
 import crypto from "crypto";
 
-// удобнее без конфликта индекс-сигнатуры:
-export type TelegramInitParsed = Record<string, string> & {
-  user?: any;
+export type TelegramInitParsed = {
+  [k: string]: string | undefined; // теперь все ключи могут быть undefined
+  user?: string;
   hash?: string;
 };
 
 export function parseInitData(initData: string): TelegramInitParsed {
-  const sp = new URLSearchParams(initData);
+  const params = new URLSearchParams(initData);
   const obj: Record<string, string> = {};
-  sp.forEach((v, k) => (obj[k] = v));
-  if (obj.user) {
-    try {
-      // tg передает user как JSON-строку
-      (obj as any).user = JSON.parse(obj.user);
-    } catch {}
-  }
-  return obj as TelegramInitParsed;
+  // собираем все ключи/значения один-в-один как прислал Telegram
+  for (const [k, v] of params.entries()) obj[k] = v;
+  return obj;
 }
 
-// Валидация initData по алгоритму Telegram WebApp
+/** Валидация как в документации Telegram Web Apps */
 export function verifyInitData(initData: string, botToken: string) {
-  const data = parseInitData(initData);
-  const { hash, ...rest } = data as any;
-  if (!hash) return null;
+  try {
+    const data = parseInitData(initData);
+    const { hash, ...rest } = data as any;
 
-  const checkArr = Object.keys(rest)
-    .sort()
-    .map((k) => `${k}=${typeof rest[k] === "string" ? rest[k] : JSON.stringify(rest[k])}`);
-  const dataCheckString = checkArr.join("\n");
+    if (!hash) return null;
 
-  const secret = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
-  const signature = crypto.createHmac("sha256", secret).update(dataCheckString).digest("hex");
+    // data_check_string
+    const lines = Object.keys(rest)
+      .sort()
+      .map(k => `${k}=${typeof rest[k] === "string" ? rest[k] : JSON.stringify(rest[k])}`)
+      .join("\n");
 
-  if (signature !== hash) return null;
-  return { ...rest, user: (rest as any).user };
+    const secret = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
+    const signature = crypto.createHmac("sha256", secret).update(lines).digest("hex");
+
+    if (signature !== hash) return null;
+
+    // user = JSON string → распарсим
+    const user = rest.user ? JSON.parse(rest.user) : undefined;
+    return { ...rest, user };
+  } catch {
+    return null;
+  }
 }
 
-/** Подпись admin ссылок (approve/decline) */
+/** Подпись/проверка ссылок для админ-кнопок в Telegram */
 export function signAdmin(id: string, key: string) {
   return crypto.createHmac("sha256", key).update(id).digest("hex");
 }
-
 export function verifyAdminSig(id: string, sig: string, key: string) {
   return signAdmin(id, key) === sig;
 }
