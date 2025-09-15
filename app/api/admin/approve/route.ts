@@ -1,14 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verify } from '@/lib/sign';
 import { getDeposit, markDeposit } from '@/lib/deposits';
-import { getBalance, setBalance } from '@/lib/store';
+import { getBalance, setBalance } from '@/lib/store'; // это у тебя уже есть
 
 export const dynamic = 'force-dynamic';
 
-/**
- * GET /api/deposit/approve?id=...&k=...
- * Обрабатывает клик администратора по кнопке "Подтвердить"
- */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const id = searchParams.get('id') || '';
@@ -25,9 +21,11 @@ export async function GET(req: NextRequest) {
   }
 
   markDeposit(id, 'approved');
+
   const before = getBalance(dep.userId);
   const after = before + dep.amount;
   setBalance(dep.userId, after);
 
+  // можно вернуть простую HTML-страницу
   return NextResponse.json({ ok: true, applied: dep.amount, balance: after });
 }

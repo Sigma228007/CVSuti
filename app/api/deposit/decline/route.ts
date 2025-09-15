@@ -1,13 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verify } from '@/lib/sign';
 import { getDeposit, markDeposit } from '@/lib/deposits';
-import { getBalance, setBalance } from '@/lib/store';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * GET /api/deposit/approve?id=...&k=...
- * Обрабатывает клик администратора по кнопке "Подтвердить"
+ * GET /api/deposit/decline?id=...&k=...
+ * Обрабатывает клик администратора по кнопке "Отклонить"
  */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -24,10 +23,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'already processed', status: dep.status }, { status: 400 });
   }
 
-  markDeposit(id, 'approved');
-  const before = getBalance(dep.userId);
-  const after = before + dep.amount;
-  setBalance(dep.userId, after);
-
-  return NextResponse.json({ ok: true, applied: dep.amount, balance: after });
+  markDeposit(id, 'declined');
+  return NextResponse.json({ ok: true });
 }
