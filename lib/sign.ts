@@ -1,49 +1,61 @@
 import crypto from "crypto";
 
-/** Разбор строки initData из Telegram WebApp */
-export function parseInitData(initData: string): Record<string, any> {
-  const sp = new URLSearchParams(initData || "");
-  const obj: Record<string, any> = {};
+export type TelegramInitParsed = {
+  [k: string]: string | undefined; // <-- допускаем undefined
+  user?: any;
+  hash?: string;
+  signature?: string;
+};
+/** Парсим строку initData из Telegram WebApp */
+export function parseInitData(initData: string): TelegramInitParsed {
+  const sp = new URLSearchParams(initData);
+  const obj: Record<string, string> = {};
   sp.forEach((v, k) => (obj[k] = v));
+
+  const out: TelegramInitParsed = { ...obj };
   if (obj.user) {
-    try { obj.user = JSON.parse(obj.user as string); } catch {}
+    try { out.user = JSON.parse(obj.user); } catch {}
   }
-  return obj;
+  return out;
 }
 
-/** Верификация initData по алгоритму Telegram */
+/** Проверяем initData по алгоритму Telegram */
 export function verifyInitData(initData: string, botToken: string) {
+  if (!initData || !botToken) return null;
+
   const data = parseInitData(initData);
-  const { hash, ...rest } = data as any;
-  if (!hash) return null;
+  const { hash, signature, ...rest } = data as any;
 
-  // 1) data_check_string
-  const checkArr = Object.keys(rest)
+  // data_check_string: все пары кроме hash/signature, сортируем по ключу
+  const check = Object.keys(rest)
     .sort()
-    .map((k) => `${k}=${typeof rest[k] === "string" ? rest[k] : JSON.stringify(rest[k])}`);
-  const dataCheckString = checkArr.join("\n");
+    .map(k => `${k}=${typeof (rest as any)[k] === "string" ? (rest as any)[k] : JSON.stringify((rest as any)[k])}`)
+    .join("\n");
 
-  // 2) secret = HMAC_SHA256("WebAppData", botToken)
   const secret = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
-  const signature = crypto.createHmac("sha256", secret).update(dataCheckString).digest("hex");
+  const sign   = crypto.createHmac("sha256", secret).update(check).digest("hex");
 
-  if (signature !== hash) return null;
-  return { ...rest, user: (rest as any).user as { id: number } };
+  const given = (hash || signature || "").toLowerCase();
+  if (!given || given !== sign) return null;
+
+  return { ok: true as const, user: (data as any).user };
 }
-
-export type VerifiedInit = NonNullable<ReturnType<typeof verifyInitData>>;
 
 /** Подпись/проверка админ-ссылок (approve/decline) */
-export function signAdminPayload(payload: any, key: string) {
-  const id = String(payload?.id ?? "");
-  const signer = crypto.createHmac("sha256", key).update(id);
-  return signer.digest("hex");
+export function signAdminPayload(payload: object, key: string) {
+  return crypto.createHmac("sha256", key).update(JSON.stringify(payload)).digest("hex");
 }
-export function verifyAdminLink(sig: string, id: string, key: string) {
-  if (!sig || !id || !key) return false;
-  const right = signAdminPayload({ id }, key);
-  // Тайминг-безопасное сравнение
-  const a = Buffer.from(right, "utf8");
-  const b = Buffer.from(sig, "utf8");
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+
+export function verifyAdminLink(query: URLSearchParams, key: string) {
+  const id     = query.get("id") ?? "";
+  const user   = Number(query.get("user") ?? "0");
+  const amount = Number(query.get("amount") ?? "0");
+  const sig    = query.get("sig") ?? "";
+
+  if (!id || !user || !amount || !sig) return null;
+
+  const expect = signAdminPayload({ id, userId: user, amount }, key);
+  if (expect !== sig) return null;
+
+  return { id, userId: user, amount };
 }
