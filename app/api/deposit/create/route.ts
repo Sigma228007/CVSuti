@@ -1,36 +1,24 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { verifyInitData } from "@/lib/sign";
 import { createDeposit } from "@/lib/deposits";
 import { notifyDepositAdmin } from "@/lib/notify";
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
-    const { initData, amount } = await req.json() as { initData?: string; amount?: number };
+    const { initData, amount } = await req.json();
 
-    if (!process.env.BOT_TOKEN) {
-      return NextResponse.json({ ok:false, error:"server_misconfig: BOT_TOKEN is empty" }, { status:500 });
-    }
+    if (!initData || !Number.isFinite(Number(amount)))
+      return NextResponse.json({ ok: false, error: "bad_params" }, { status: 400 });
 
-    if (!initData || typeof initData !== "string") {
-      return NextResponse.json({ ok:false, error:"no_initData" }, { status:401 });
-    }
+    const botToken = process.env.BOT_TOKEN!;
+    const auth = verifyInitData(initData, botToken);
+    if (!auth) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
-    const parsed = verifyInitData(initData, process.env.BOT_TOKEN);
-    if (!parsed || !parsed.user?.id) {
-      // ВАЖНО: не логируем initData целиком, но дадим подсказку.
-      return NextResponse.json({ ok:false, error:"unauthorized: verifyInitData failed" }, { status:401 });
-    }
+    const dep = createDeposit(auth.id, Math.floor(Number(amount)));
+    await notifyDepositAdmin({ id: dep.id, userId: dep.userId, amount: dep.amount });
 
-    const amt = Number(amount);
-    if (!Number.isFinite(amt) || amt <= 0) {
-      return NextResponse.json({ ok:false, error:"bad_amount" }, { status:400 });
-    }
-
-    const dep = createDeposit(parsed.user.id, Math.floor(amt));
-    await notifyDepositAdmin(dep);
-
-    return NextResponse.json({ ok:true, dep });
-  } catch (e:any) {
-    return NextResponse.json({ ok:false, error: e?.message ?? "server_error" }, { status:500 });
+    return NextResponse.json({ ok: true, dep });
+  } catch {
+    return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
   }
 }
