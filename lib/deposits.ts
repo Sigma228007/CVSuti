@@ -1,44 +1,40 @@
-export type DepositStatus = "pending" | "approved" | "declined";
-
 export type Deposit = {
   id: string;
   userId: number;
   amount: number;
-  status: DepositStatus;
+  status: 'pending' | 'approved' | 'declined';
   createdAt: number;
 };
 
+// простая in-memory коллекция (в проде замените на БД)
 const deposits: Deposit[] = [];
 
 export function createDeposit(userId: number, amount: number): Deposit {
-  const id = `dep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const dep: Deposit = { id, userId, amount, status: "pending", createdAt: Date.now() };
-  deposits.unshift(dep);
+  const dep: Deposit = {
+    id: `dep_${Date.now()}_${userId}_${Math.random().toString(36).slice(2, 6)}`,
+    userId,
+    amount,
+    status: 'pending',
+    createdAt: Date.now(),
+  };
+  deposits.push(dep);
   return dep;
 }
 
-export function getById(id: string) {
+export function getDeposit(id: string): Deposit | undefined {
   return deposits.find((d) => d.id === id);
 }
 
-export function getPendingForUser(userId: number) {
-  return deposits.filter((d) => d.userId === userId && d.status === "pending");
-}
-
-export function approveDeposit(id: string) {
-  const dep = getById(id);
-  if (!dep) throw new Error("deposit not found");
-  dep.status = "approved";
+export function markDeposit(id: string, status: 'approved' | 'declined') {
+  const dep = getDeposit(id);
+  if (dep) dep.status = status;
   return dep;
 }
 
-export function declineDeposit(id: string) {
-  const dep = getById(id);
-  if (!dep) throw new Error("deposit not found");
-  dep.status = "declined";
-  return dep;
+export function getPendingForUser(userId: number): Deposit[] {
+  return deposits.filter((d) => d.userId === userId && d.status === 'pending');
 }
 
-export function allDeposits() {
-  return deposits;
+export function getAllPending(): Deposit[] {
+  return deposits.filter((d) => d.status === 'pending');
 }

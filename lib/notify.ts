@@ -65,3 +65,4 @@ export async function notifyUserDepositDeclined(dep: { userId: number; amount: n
     text: `❌ Пополнение на ${dep.amount}₽ отклонено. Если это ошибка — напишите поддержке.`,
   });
 }
+export { notifyDepositAdmin as notifyNewDeposit }
