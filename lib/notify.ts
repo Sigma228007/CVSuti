@@ -1,4 +1,3 @@
-import { getBaseUrl } from "./config";
 import { signAdminPayload } from "./sign";
 
 const BOT_TOKEN = process.env.BOT_TOKEN!;
@@ -13,12 +12,16 @@ async function tgSend(chatId: number, payload: any) {
   });
 }
 
+function baseUrl() {
+  return (process.env.NEXT_PUBLIC_BASE_URL || "").replace(/\/+$/, "");
+}
+
 export async function notifyDepositAdmin(dep: { id: string; userId: number; amount: number }) {
   if (!ADMIN_CHAT) return;
-  const base = getBaseUrl();
+  const base = baseUrl();
   const key = process.env.ADMIN_SIGN_KEY || "";
-  const sig = signAdminPayload(dep, key);
 
+  const sig = signAdminPayload({ id: dep.id }, key);
   const approveUrl = `${base}/api/deposit/approve?id=${encodeURIComponent(dep.id)}&user=${dep.userId}&amount=${dep.amount}&sig=${sig}`;
   const declineUrl = `${base}/api/deposit/decline?id=${encodeURIComponent(dep.id)}&user=${dep.userId}&amount=${dep.amount}&sig=${sig}`;
 
@@ -42,13 +45,9 @@ export async function notifyDepositAdmin(dep: { id: string; userId: number; amou
 }
 
 export async function notifyUserDepositApproved(dep: { userId: number; amount: number }) {
-  await tgSend(dep.userId, {
-    text: `✅ Зачислено ${dep.amount}₽ на баланс.`,
-  });
+  await tgSend(dep.userId, { text: `✅ Зачислено ${dep.amount}₽ на баланс.` });
 }
 
 export async function notifyUserDepositDeclined(dep: { userId: number; amount: number }) {
-  await tgSend(dep.userId, {
-    text: `❌ Пополнение на ${dep.amount}₽ отклонено. Если это ошибка – напишите поддержке.`,
-  });
+  await tgSend(dep.userId, { text: `❌ Пополнение на ${dep.amount}₽ отклонено.` });
 }

@@ -1,88 +1,49 @@
 import crypto from "crypto";
 
-/** Что мы парсим из initData Telegram WebApp */
-export type TelegramInitParsed = {
-  [k: string]: string | undefined; // <-- тут исправлено
-  user?: any;
-  hash?: string;
-  signature?: string;
-};
-
-/** Разбор initData-строки из Telegram WebApp */
-export function parseInitData(initData: string): TelegramInitParsed {
+/** Разбор строки initData из Telegram WebApp */
+export function parseInitData(initData: string): Record<string, any> {
   const sp = new URLSearchParams(initData || "");
-  const out: Record<string, string> = {};
-  sp.forEach((v, k) => (out[k] = v));
-  if (out.user) {
-    try {
-      (out as any).user = JSON.parse(out.user);
-    } catch {
-      /* ignore */
-    }
+  const obj: Record<string, any> = {};
+  sp.forEach((v, k) => (obj[k] = v));
+  if (obj.user) {
+    try { obj.user = JSON.parse(obj.user as string); } catch {}
   }
-  return out as TelegramInitParsed;
+  return obj;
 }
 
-/** Проверка initData (документация Telegram) */
+/** Верификация initData по алгоритму Telegram */
 export function verifyInitData(initData: string, botToken: string) {
-  if (!initData || !botToken) return null;
-
   const data = parseInitData(initData);
-  const received = (data.hash || data.signature || "").toLowerCase();
-  if (!received) return null;
+  const { hash, ...rest } = data as any;
+  if (!hash) return null;
 
-  const entries = Object.entries(data)
-    .filter(([k]) => k !== "hash" && k !== "signature")
-    .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+  // 1) data_check_string
+  const checkArr = Object.keys(rest)
     .sort()
-    .join("\n");
+    .map((k) => `${k}=${typeof rest[k] === "string" ? rest[k] : JSON.stringify(rest[k])}`);
+  const dataCheckString = checkArr.join("\n");
 
-  const secret = crypto
-    .createHmac("sha256", "WebAppData")
-    .update(botToken)
-    .digest();
+  // 2) secret = HMAC_SHA256("WebAppData", botToken)
+  const secret = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
+  const signature = crypto.createHmac("sha256", secret).update(dataCheckString).digest("hex");
 
-  const expected = crypto.createHmac("sha256", secret).update(entries).digest("hex");
-
-  const ok =
-    expected.length === received.length &&
-    crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(received, "hex"));
-
-  if (!ok) return null;
-  return { ...data, user: (data as any).user };
+  if (signature !== hash) return null;
+  return { ...rest, user: (rest as any).user as { id: number } };
 }
 
-/** Подпись payload для админских ссылок */
-export function signAdminPayload(
-  dep: { id: string; userId: number; amount: number },
-  key: string
-) {
-  const payload = `${dep.id}|${dep.userId}|${dep.amount}`;
-  return crypto.createHmac("sha256", key || "").update(payload).digest("hex");
+export type VerifiedInit = NonNullable<ReturnType<typeof verifyInitData>>;
+
+/** Подпись/проверка админ-ссылок (approve/decline) */
+export function signAdminPayload(payload: any, key: string) {
+  const id = String(payload?.id ?? "");
+  const signer = crypto.createHmac("sha256", key).update(id);
+  return signer.digest("hex");
 }
-
-/** Проверка параметров из админской ссылки approve/decline */
-export function verifyAdminLink(query: {
-  id?: string;
-  user?: string | number;
-  amount?: string | number;
-  sig?: string;
-}) {
-  const id = String(query.id || "");
-  const userId = Number(query.user);
-  const amount = Number(query.amount);
-  const sig = String(query.sig || "");
-
-  if (!id || !userId || !amount || !sig) return { ok: false as const };
-
-  const key = process.env.ADMIN_SIGN_KEY || "";
-  const payload = `${id}|${userId}|${amount}`;
-  const expected = crypto.createHmac("sha256", key).update(payload).digest("hex");
-
-  const ok =
-    expected.length === sig.length &&
-    crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(sig, "hex"));
-
-  if (!ok) return { ok: false as const };
-  return { ok: true as const, id, userId, amount };
+export function verifyAdminLink(sig: string, id: string, key: string) {
+  if (!sig || !id || !key) return false;
+  const right = signAdminPayload({ id }, key);
+  // Тайминг-безопасное сравнение
+  const a = Buffer.from(right, "utf8");
+  const b = Buffer.from(sig, "utf8");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
