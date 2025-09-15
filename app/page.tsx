@@ -2,99 +2,70 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-declare global {
-  interface Window {
-    Telegram?: any;
-  }
-}
-
+declare global { interface Window { Telegram?: any } }
 type TUser = { id: number; first_name?: string; username?: string };
+type PendingDeposit = { id: string; userId: number; amount: number; createdAt: number; status: string };
 
 function getInitData(): string {
   if (typeof window === "undefined") return "";
   const tg = window.Telegram?.WebApp;
-
-  // 1) из Telegram WebApp API
-  if (tg?.initData && typeof tg.initData === "string" && tg.initData.length > 0) {
-    return tg.initData;
-  }
-
-  // 2) иногда приходит в hash (#tgWebAppData=...)
+  if (tg?.initData) return tg.initData;
   const url = new URL(window.location.href);
-  const hash = url.hash || "";
-  const m = hash.match(/tgWebAppData=([^&]+)/);
-  if (m?.[1]) {
-    try {
-      return decodeURIComponent(m[1]);
-    } catch {
-      // ignore
-    }
-  }
-
-  // 3) или в query (?tgWebAppData=...)
-  const fromSearch = url.searchParams.get("tgWebAppData");
-  if (fromSearch) {
-    try {
-      return decodeURIComponent(fromSearch);
-    } catch {
-      return fromSearch;
-    }
-  }
-
+  const m = (url.hash||"").match(/tgWebAppData=([^&]+)/);
+  if (m?.[1]) return decodeURIComponent(m[1]);
+  const q = url.searchParams.get("tgWebAppData");
+  if (q) return decodeURIComponent(q);
   return "";
 }
 
 export default function Home() {
-  // ---- AUTH state ----
-  const [user, setUser] = useState<TUser | null>(null);
-  const [authError, setAuthError] = useState<string | null>(null);
+  // Auth
+  const [user, setUser] = useState<TUser|null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState<string|null>(null);
+  const initData = useMemo(()=>getInitData(), []);
 
-  // ---- GAME state ----
-  const [balance, setBalance] = useState<number>(1000);
+  // Game state
+  const [balance, setBalance] = useState<number>(0);
   const [amount, setAmount] = useState<number>(100);
   const [chance, setChance] = useState<number>(50);
-  const [dir, setDir] = useState<"under" | "over">("under");
+  const [dir, setDir] = useState<"under"|"over">("under");
   const [coef, setCoef] = useState<number>(0);
   const [log, setLog] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
 
-  // Telegram init (не используем это как критерий «в Telegram»; ориентируемся ТОЛЬКО на ответ /api/auth)
-  useEffect(() => {
-    const tg = window.Telegram?.WebApp;
-    tg?.ready?.();
-    tg?.expand?.();
-  }, []);
+  // Deposit modal
+  const [depositOpen, setDepositOpen] = useState(false);
+  const [depositAmt, setDepositAmt] = useState<number>(500);
 
-  // Авторизация строго по initData → /api/auth
-  useEffect(() => {
-    const init = getInitData();
-    (async () => {
-      setAuthLoading(true);
-      setAuthError(null);
+  // Admin
+  const [pending, setPending] = useState<PendingDeposit[]>([]);
+  const isAdmin = useMemo(()=>{
+    const ids = (process.env.NEXT_PUBLIC_ADMIN_IDS ?? '').split(',').map(s=>Number(s.trim())).filter(Boolean);
+    // чтобы не светить список в браузере, лучше сверять на сервере.
+    // Здесь используем только для показа кнопки панели; сервер всё равно проверит.
+    return !!user && ids.includes(user.id);
+  }, [user]);
+
+  useEffect(()=>{
+    const tg = window.Telegram?.WebApp;
+    tg?.ready?.(); tg?.expand?.();
+    (async ()=>{
       try {
         const r = await fetch("/api/auth", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ initData: init }),
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({ initData })
         });
         const data = await r.json();
-        if (data?.ok && data?.user) {
-          setUser(data.user as TUser);
-        } else {
-          // 401 от сервера — действительно не из Telegram / плохая подпись
-          setAuthError(data?.error || "auth_failed");
-        }
-      } catch {
-        setAuthError("network_error");
-      } finally {
-        setAuthLoading(false);
-      }
+        if (data?.ok && data?.user) { setUser(data.user as TUser); }
+        else { setAuthError(data?.error || "auth_failed"); }
+      } catch { setAuthError("network_error"); }
+      finally { setAuthLoading(false); }
     })();
-  }, []);
+  }, [initData]);
 
-  // Пересчёт коэффициента
-  useEffect(() => {
+  useEffect(()=>{
     const edgeBp = Number(process.env.NEXT_PUBLIC_HOUSE_EDGE_BP ?? 150);
     const edge = (10000 - edgeBp) / 10000;
     const fair = 100 / Math.max(1, Math.min(95, chance));
@@ -102,175 +73,225 @@ export default function Home() {
   }, [chance]);
 
   async function place() {
-    if (!user) return; // без авторизации не даём ставить
-
+    if (!user) return;
     setBusy(true);
     try {
-      const initData = getInitData(); // берём прямо перед запросом
       const res = await fetch("/api/bet", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ initData, amount, chance, dir }), // ВАЖНО: шлём initData (не userId!)
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({ initData, amount, chance, dir })
       });
       const data = await res.json();
       if (data.ok) {
         setBalance(data.balance);
-        setLog((prev) => [data.bet, ...prev].slice(0, 30));
+        setLog(prev => [data.bet, ...prev].slice(0,30));
+      } else { alert(data.error || "Ошибка"); }
+    } catch { alert("Сеть/сервер недоступен"); }
+    finally { setBusy(false); }
+  }
+
+  // Deposit flow
+  function openDeposit() { setDepositOpen(true); setDepositAmt(500); }
+  function closeDeposit() { setDepositOpen(false); }
+  async function submitDeposit() {
+    try {
+      const r = await fetch("/api/deposit/create", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({ initData, amount: depositAmt })
+      });
+      const data = await r.json();
+      if (data.ok) {
+        alert("Заявка на пополнение отправлена. После подтверждения администратором средства поступят на баланс.");
+        setDepositOpen(false);
       } else {
-        alert(data.error || "Ошибка");
+        alert(data.error || "Не удалось создать заявку");
       }
     } catch {
       alert("Сеть/сервер недоступен");
-    } finally {
-      setBusy(false);
     }
   }
 
-  function deposit() { alert("Пополнение: подключите провайдера платежей. (заглушка)"); }
-  function withdraw() { alert("Вывод: подключите провайдера платежей и KYC. (заглушка)"); }
+  // Admin panel
+  async function refreshPending() {
+    const r = await fetch("/api/deposit/pending", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ initData })
+    });
+    const data = await r.json();
+    if (data.ok) setPending(data.pending as PendingDeposit[]);
+    else alert(data.error || "Ошибка загрузки");
+  }
+  async function actPending(id: string, action: 'approve'|'decline') {
+    const r = await fetch("/api/deposit/approve", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ initData, requestId: id, action })
+    });
+    const data = await r.json();
+    if (data.ok) {
+      alert(`Заявка ${action === 'approve' ? 'подтверждена' : 'отклонена'}`);
+      await refreshPending();
+      if (action === 'approve' && data.updated?.userId === user?.id) {
+        // если админ подтвердил свой же депозит – баланс обновится при следующей ставке,
+        // здесь можно не трогать.
+      }
+    } else { alert(data.error || "Ошибка"); }
+  }
 
-  // ---- Экраны состояния ----
+  useEffect(()=>{
+    if (isAdmin) refreshPending();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin]);
 
-  // 1) Пока авторизуемся — показываем загрузку
+  // DEMO feed (помечённая)
+  const demoFeedOn = String(process.env.NEXT_PUBLIC_DEMO_FEED ?? '') === '1';
+  const [demo, setDemo] = useState<any[]>([]);
+  useEffect(()=>{
+    if (!demoFeedOn) return;
+    const int = setInterval(()=>{
+      const id = Math.random().toString(36).slice(2,8);
+      const val = Math.floor(Math.random()*1_000_000);
+      const win = Math.random() < 0.48;
+      const amt = [50,100,200,500,1000,2500][Math.floor(Math.random()*6)];
+      const chance = [10,25,50,70,90][Math.floor(Math.random()*5)];
+      setDemo(prev => [{
+        id:`demo_${Date.now()}_${id}`,
+        outcome:{ value: val, win, coef: +(100/chance*0.985).toFixed(2), payout: win? Math.floor(amt * (100/chance*0.985)):0 }
+      }, ...prev].slice(0,50));
+    }, 2000);
+    return ()=>clearInterval(int);
+  }, [demoFeedOn]);
+
+  // Gates
   if (authLoading) {
-    return (
-      <main style={{ display: "grid", placeItems: "center", minHeight: "100vh", padding: 20 }}>
-        <div style={{ maxWidth: 420, textAlign: "center" }}>
-          <h2>Подключение к Telegram…</h2>
-          <p>Пожалуйста, подождите.</p>
-        </div>
-      </main>
-    );
+    return <main className="center"><div className="card"><div className="h2">Подключение к Telegram…</div></div></main>;
   }
-
-  // 2) Авторизация не прошла → открыто не из Telegram (или подпись неверная)
   if (!user) {
-    return (
-      <main style={{ display: "grid", placeItems: "center", minHeight: "100vh", padding: 20 }}>
-        <div style={{ maxWidth: 420, textAlign: "center" }}>
-          <h2>Откройте через Telegram</h2>
-          <p>Это мини-приложение запускается из бота {process.env.NEXT_PUBLIC_BOT_NAME ?? ""}.</p>
-          {authError && <p style={{ color: "tomato" }}>Ошибка: {authError}</p>}
-        </div>
-      </main>
-    );
+    return <main className="center"><div className="card">
+      <div className="h2">Откройте через Telegram</div>
+      <div className="sub">Это мини-приложение запускается из бота {process.env.NEXT_PUBLIC_BOT_NAME ?? ""}.</div>
+      {authError && <div className="warn">Ошибка: {authError}</div>}
+    </div></main>;
   }
 
-  // ---- Основной UI ----
   return (
-    <div className="container">
-      <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
+    <div className="container fade-in">
+      <header className="row header">
         <div>
           <div className="h1">Nvuti-style</div>
           <div className="sub">Проведённая честность • WebApp {process.env.NEXT_PUBLIC_BOT_NAME ?? ""}</div>
         </div>
-        <div className="row" style={{ gap: 8 }}>
+        <div className="row gap8">
           <span className="badge">UID: {user?.id}</span>
-          <span className="badge">
-            Баланс: <b className="k">{balance} ₽</b>
-          </span>
-          <button className="btn-outline" onClick={deposit}>Пополнить</button>
-          <button className="btn-outline" onClick={withdraw}>Вывести</button>
+          <span className="badge">Баланс: <b className="k">{balance} ₽</b></span>
+          <button className="btn-outline" onClick={openDeposit}>Пополнить</button>
         </div>
-      </div>
+      </header>
 
-      <div className="grid">
-        <div className="card">
+      <main className="grid">
+        <section className="card lift">
           <div className="label">Сумма ставки (1–10 000 ₽)</div>
-          <input
-            className="input"
-            type="number"
-            min={1}
-            max={10000}
-            value={amount}
-            onChange={(e) =>
-              setAmount(Math.max(1, Math.min(10000, parseInt(e.target.value || "0", 10))))
-            }
-          />
+          <input className="input" type="number" min={1} max={10000} value={amount}
+            onChange={(e)=>setAmount(Math.max(1, Math.min(10000, parseInt(e.target.value||'0',10))))} />
+          <div className="row gap8 wrap">
+            {[100,500,1000].map(v=>(
+              <button key={v} className="chip" onClick={()=>setAmount(v)}>{v} ₽</button>
+            ))}
+          </div>
 
-          <div className="row" style={{ marginTop: 12, justifyContent: "space-between" }}>
+          <div className="row between">
             <div>
               <div className="label">Шанс (1–95%)</div>
-              <input
-                className="slider"
-                type="range"
-                min={1}
-                max={95}
-                value={chance}
-                onChange={(e) => setChance(parseInt(e.target.value, 10))}
-              />
+              <input className="slider" type="range" min={1} max={95} value={chance} onChange={(e)=>setChance(parseInt(e.target.value,10))}/>
             </div>
             <div className="badge">{chance}%</div>
           </div>
 
-          <div className="row" style={{ marginTop: 12, gap: 8 }}>
-            <button className="btn-outline" onClick={() => setDir("under")} disabled={dir === "under"}>
-              Меньше
-            </button>
-            <button className="btn-outline" onClick={() => setDir("over")} disabled={dir === "over"}>
-              Больше
-            </button>
+          <div className="row gap8">
+            <button className="btn-outline" onClick={()=>setDir('under')} disabled={dir==='under'}>Меньше</button>
+            <button className="btn-outline" onClick={()=>setDir('over')} disabled={dir==='over'}>Больше</button>
           </div>
 
-          <div className="row" style={{ marginTop: 12, justifyContent: "space-between" }}>
-            <div className="sub">
-              Коэффициент: <b className="k">×{coef}</b>
-            </div>
-            <div className="sub">
-              Потенц. выплата: <b className="k">{Math.floor(amount * coef)} ₽</b>
-            </div>
+          <div className="row between">
+            <div className="sub">Коэффициент: <b className="k">×{coef}</b></div>
+            <div className="sub">Потенц. выплата: <b className="k">{Math.floor(amount * coef)} ₽</b></div>
           </div>
 
-          <div style={{ marginTop: 16 }}>
-            <button className="btn" onClick={place} disabled={busy}>
-              Сделать ставку
-            </button>
-          </div>
-        </div>
+          <div><button className="btn pulse" onClick={place} disabled={busy}>Сделать ставку</button></div>
+        </section>
 
-        <div className="card">
-          <div className="row" style={{ justifyContent: "space-between" }}>
+        <section className="card">
+          <div className="row between">
             <b>Последние раунды</b>
-            <a
-              className="sub"
-              href="#"
-              onClick={(e) => {
-                e.preventDefault();
-                alert("Опубликуйте старые serverSeed для проверки.");
-              }}
-            >
-              Проверка честности
-            </a>
+            <a className="sub" href="#" onClick={(e)=>{e.preventDefault(); alert('Опубликуйте старые serverSeed для проверки.')}}>Проверка честности</a>
           </div>
-          <ul style={{ marginTop: 8, paddingLeft: 18 }}>
-            {log.slice(0, 10).map((b: any, i) => (
-              <li key={i} style={{ marginBottom: 6 }}>
-                <span className="k">{b.outcome.value.toString().padStart(6, "0")}</span> —{" "}
-                {b.dir === "under" ? "меньше" : "больше"} при {b.chance}% →{" "}
-                {b.outcome.win ? "победа" : "проигрыш"}; выплата <b className="k">{b.outcome.payout}</b>
-                <div className="sub">
-                  coef ×{b.outcome.coef} • commit {b.outcome.proof.serverSeedHash.slice(0, 10)}… •
-                  nonce {b.nonce}
-                </div>
+          <ul className="list">
+            {log.slice(0,10).map((b:any,i)=>(
+              <li key={i}>
+                <span className="k">{b.outcome.value.toString().padStart(6,'0')}</span> — {b.dir==='under'?'меньше':'больше'} при {b.chance}% → {b.outcome.win? 'победа':'проигрыш'}; выплата <b className="k">{b.outcome.payout}</b>
+                <div className="sub">coef ×{b.outcome.coef} • commit {b.outcome.proof.serverSeedHash.slice(0,10)}… • nonce {b.nonce}</div>
               </li>
             ))}
           </ul>
-        </div>
-      </div>
+        </section>
 
-      {/* Бегущая строка */}
-      <div className="ticker">
-        <div>
-          {log.concat(log).slice(0, 30).map((b: any, i) => (
-            <span key={i} style={{ marginRight: 24 }}>
-              #{b.id.slice(-6)} •{" "}
-              <span className="k">{b.outcome.value.toString().padStart(6, "0")}</span> →{" "}
-              {b.outcome.win ? "✔" : ""}
-              {!b.outcome.win ? "✖" : ""}
-            </span>
-          ))}
+        {isAdmin && (
+          <section className="card">
+            <div className="row between"><b>Админ • Пополнения</b><button className="btn-outline" onClick={refreshPending}>Обновить</button></div>
+            {pending.length===0 ? <div className="sub">Ожидающих заявок нет.</div> : (
+              <ul className="list">
+                {pending.map(p=>(
+                  <li key={p.id} className="row between wrap">
+                    <span>#{p.id.slice(-6)} • user {p.userId} • {p.amount} ₽ • {new Date(p.createdAt).toLocaleString()}</span>
+                    <span className="row gap8">
+                      <button className="chip ok" onClick={()=>actPending(p.id,'approve')}>Подтвердить</button>
+                      <button className="chip warn" onClick={()=>actPending(p.id,'decline')}>Отклонить</button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+      </main>
+
+      {/* ДЕМО-лента активности (явно помечена) */}
+      {demoFeedOn && (
+        <section className="demo">
+          <div className="demo-title">Лента активности (демо)</div>
+          <div className="ticker">
+            <div>
+              {demo.concat(demo).slice(0,40).map((b:any,i:number)=>(
+                <span key={i} style={{marginRight:24}}>
+                  #{b.id.slice(-6)} • <span className="k">{b.outcome.value.toString().padStart(6,'0')}</span> → {b.outcome.win? '✔':'✖'}
+                </span>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Модал пополнения */}
+      {depositOpen && (
+        <div className="overlay" onClick={closeDeposit}>
+          <div className="modal" onClick={(e)=>e.stopPropagation()}>
+            <div className="h2">Пополнение баланса</div>
+            <div className="label">Сумма</div>
+            <input className="input" type="number" min={1} value={depositAmt} onChange={(e)=>setDepositAmt(Math.max(1, parseInt(e.target.value||'0',10)))} />
+            <div className="info">
+              Реквизиты для перевода:<br/>
+              <b>{process.env.NEXT_PUBLIC_DEPOSIT_DETAILS ?? 'Укажите NEXT_PUBLIC_DEPOSIT_DETAILS'}</b>
+              <div className="sub">После оплаты нажмите «Я оплатил» — заявка уйдёт администратору на подтверждение.</div>
+            </div>
+            <div className="row gap8">
+              <button className="btn-outline" onClick={closeDeposit}>Отмена</button>
+              <button className="btn" onClick={submitDeposit}>Я оплатил</button>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
