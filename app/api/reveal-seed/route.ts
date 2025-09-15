@@ -1,8 +1,11 @@
-import { NextResponse } from 'next/server';
-import { publicCommit } from '../../../lib/fair';
+import { NextResponse } from "next/server";
+import { publicCommit } from "@/lib/fair";
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+export const runtime = "nodejs";
+
 export async function GET() {
-  return NextResponse.json({ commit: publicCommit(process.env.SERVER_SEED!) });
+  if (!process.env.SERVER_SEED) {
+    return NextResponse.json({ ok: false, error: "SERVER_SEED missing" }, { status: 500 });
+  }
+  return NextResponse.json({ ok: true, commit: publicCommit(process.env.SERVER_SEED) });
 }
