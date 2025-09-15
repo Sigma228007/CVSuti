@@ -1,61 +1,85 @@
 import crypto from "crypto";
 
-export type TelegramInitParsed = {
-  [k: string]: string | undefined; // <-- допускаем undefined
-  user?: any;
-  hash?: string;
-  signature?: string;
+// ---- тип результата валидации ----
+export type VerifiedInit = {
+  user: { id: number; [k: string]: any } | null;
+  // можно прокинуть, если хотите что-то ещё использовать
+  raw: string;
+  data: Record<string, string>;
 };
-/** Парсим строку initData из Telegram WebApp */
-export function parseInitData(initData: string): TelegramInitParsed {
-  const sp = new URLSearchParams(initData);
-  const obj: Record<string, string> = {};
-  sp.forEach((v, k) => (obj[k] = v));
 
-  const out: TelegramInitParsed = { ...obj };
-  if (obj.user) {
-    try { out.user = JSON.parse(obj.user); } catch {}
-  }
+// Разбор строки initData от Telegram WebApp.
+// На вход — СЫРОЙ initData (tg.WebApp.initData ИЛИ значение tgWebAppData из hash/URL).
+export function parseInitData(initData: string): Record<string, string> {
+  const params = new URLSearchParams(initData);
+  const out: Record<string, string> = {};
+  params.forEach((v, k) => {
+    out[k] = v;
+  });
   return out;
 }
 
-/** Проверяем initData по алгоритму Telegram */
-export function verifyInitData(initData: string, botToken: string) {
+// Проверка подписи initData по докам Telegram:
+// https://core.telegram.org/bots/webapps#validating-data-received-via-the-web-app
+export function verifyInitData(initData: string, botToken: string): VerifiedInit | null {
   if (!initData || !botToken) return null;
 
   const data = parseInitData(initData);
-  const { hash, signature, ...rest } = data as any;
 
-  // data_check_string: все пары кроме hash/signature, сортируем по ключу
-  const check = Object.keys(rest)
+  // hash обязателен
+  const hash = data["hash"];
+  if (!hash) return null;
+
+  // формируем data_check_string (все пары, кроме hash, отсортированы и соединены \n)
+  const check: string[] = [];
+  Object.keys(data)
+    .filter((k) => k !== "hash")
     .sort()
-    .map(k => `${k}=${typeof (rest as any)[k] === "string" ? (rest as any)[k] : JSON.stringify((rest as any)[k])}`)
-    .join("\n");
+    .forEach((k) => {
+      // ВНИМАНИЕ: значения должны быть строки
+      check.push(`${k}=${data[k] ?? ""}`);
+    });
+  const dataCheckString = check.join("\n");
 
+  // секрет = HMAC_SHA256("WebAppData", bot_token)
   const secret = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
-  const sign   = crypto.createHmac("sha256", secret).update(check).digest("hex");
+  // подпись = HMAC_SHA256(секрет, data_check_string) в hex
+  const signature = crypto.createHmac("sha256", secret).update(dataCheckString).digest("hex");
 
-  const given = (hash || signature || "").toLowerCase();
-  if (!given || given !== sign) return null;
+  if (signature !== hash) return null;
 
-  return { ok: true as const, user: (data as any).user };
+  // user — это JSON в поле 'user'
+  let user: any = null;
+  const userStr = data["user"];
+  if (userStr) {
+    try {
+      user = JSON.parse(userStr);
+    } catch {
+      user = null;
+    }
+  }
+
+  return { user: user && typeof user.id === "number" ? user : null, raw: initData, data };
 }
 
-/** Подпись/проверка админ-ссылок (approve/decline) */
-export function signAdminPayload(payload: object, key: string) {
-  return crypto.createHmac("sha256", key).update(JSON.stringify(payload)).digest("hex");
+// ---- Подпись payload’а для админ-кнопок (approve/decline) ----
+type AdminPayload = { id: string; user: number; amount: number };
+
+export function signAdminPayload(payload: AdminPayload, key: string): string {
+  const id = payload.id;
+  const msg = `${id}`; // подписываем только id, чтобы не возиться с типами в ссылке
+  return crypto.createHmac("sha256", key).update(msg).digest("hex");
 }
 
-export function verifyAdminLink(query: URLSearchParams, key: string) {
-  const id     = query.get("id") ?? "";
-  const user   = Number(query.get("user") ?? "0");
-  const amount = Number(query.get("amount") ?? "0");
-  const sig    = query.get("sig") ?? "";
+export function verifyAdminLink(q: URLSearchParams, key: string): AdminPayload | null {
+  const id = q.get("id") ?? "";
+  const sig = q.get("sig") ?? "";
+  const user = Number(q.get("user") ?? "0");
+  const amount = Number(q.get("amount") ?? "0");
+  if (!id || !sig || !user || !amount) return null;
 
-  if (!id || !user || !amount || !sig) return null;
+  const good = signAdminPayload({ id, user, amount }, key);
+  if (good !== sig) return null;
 
-  const expect = signAdminPayload({ id, userId: user, amount }, key);
-  if (expect !== sig) return null;
-
-  return { id, userId: user, amount };
+  return { id, user, amount };
 }

@@ -17,8 +17,10 @@ export async function notifyDepositAdmin(dep: { id: string; userId: number; amou
   if (!ADMIN_CHAT || !BASE) return;
 
   const key = process.env.ADMIN_SIGN_KEY || "";
-  const sig = signAdminPayload(dep, key);
-
+  const sig = signAdminPayload(
+  { id: dep.id, user: dep.userId, amount: dep.amount },
+  key
+);
   const approveUrl = `${BASE}/api/deposit/approve?id=${encodeURIComponent(dep.id)}&user=${dep.userId}&amount=${dep.amount}&sig=${sig}`;
   const declineUrl = `${BASE}/api/deposit/decline?id=${encodeURIComponent(dep.id)}&user=${dep.userId}&amount=${dep.amount}&sig=${sig}`;
 
