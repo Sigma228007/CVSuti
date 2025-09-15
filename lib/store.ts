@@ -40,6 +40,10 @@ export function setBalance(uid: number, v: number) {
   balances.set(uid, v);
 }
 
+export function addBalance(userId: number, delta: number) {
+  setBalance(userId, getBalance(userId) + delta);
+}
+
 // Nonce per user (для fair roll)
 const nonces = new Map<number, number>();
 export function getNonce(uid: number) {
