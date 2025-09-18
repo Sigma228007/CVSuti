@@ -1,49 +1,52 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { approveDeposit, getDeposit } from "@/lib/store";
+import { addBalance } from "@/lib/store";
 
-export const runtime = "nodejs"; // на Edge нельзя читать raw form-data удобно
+// Нужные ENV:
+// FK_MERCHANT_ID
+// FK_SECRET_2
 
-export async function POST(req: NextRequest) {
-  try {
-    const form = await req.formData();
-
-    const m_id = String(form.get("MERCHANT_ID") || form.get("m_id") || "");
-    const amount = String(form.get("AMOUNT") || form.get("oa") || "");
-    const intid = String(form.get("intid") || ""); // id платежа у FK (можно логировать)
-    const order_id = String(form.get("MERCHANT_ORDER_ID") || form.get("o") || form.get("order_id") || "");
-    const sign = String(form.get("SIGN") || form.get("sign") || "");
-
-    const secret2 = process.env.FK_SECRET_2 || "";
-    if (!m_id || !amount || !order_id || !sign || !secret2) {
-      return new Response("bad_params", { status: 400 });
-    }
-
-    // Проверка подписи FK (секрет 2):
-    // sign = md5(MERCHANT_ID:AMOUNT:SECRET_2:ORDER_ID)
-    const raw = `${m_id}:${amount}:${secret2}:${order_id}`;
-    const my = crypto.createHash("md5").update(raw).digest("hex");
-
-    if (my.toLowerCase() !== sign.toLowerCase()) {
-      return new Response("bad_sign", { status: 403 });
-    }
-
-    // найдём нашу заявку и заапрувим (+зачислим баланс)
-    const dep = await getDeposit(order_id);
-    if (!dep) return new Response("not_found", { status: 404 });
-    if (dep.status !== "pending") return new Response("already_done", { status: 200 });
-
-    await approveDeposit(order_id);
-
-    // По протоколу FK на Result URL достаточно вернуть любой текст, обычно "YES"
-    return new Response("YES");
-  } catch (e) {
-    console.error("FK callback error:", e);
-    return new Response("server_error", { status: 500 });
-  }
+function md5(s: string) {
+  return crypto.createHash("md5").update(s).digest("hex");
 }
 
-// иногда FK дёргает GET — разрешим ответом 200
-export async function GET() {
-  return NextResponse.json({ ok: true });
+export async function GET(req: NextRequest) {
+  try {
+    const MERCHANT_ID = process.env.FK_MERCHANT_ID || "";
+    const SECRET_2 = process.env.FK_SECRET_2 || "";
+
+    if (!MERCHANT_ID || !SECRET_2) {
+      return new NextResponse("env_error", { status: 500 });
+    }
+
+    // FreeKassa шлёт GET-параметры
+    const url = new URL(req.url);
+    const m = url.searchParams.get("MERCHANT_ID") || url.searchParams.get("m") || "";
+    const amount = url.searchParams.get("AMOUNT") || url.searchParams.get("oa") || "";
+    const orderId = url.searchParams.get("intid") || url.searchParams.get("o") || url.searchParams.get("MERCHANT_ORDER_ID") || "";
+    const sign = url.searchParams.get("SIGN") || url.searchParams.get("s") || "";
+
+    // Пример подписи FK (для нотификаций): md5(MERCHANT_ID:AMOUNT:SECRET_2:ORDER_ID)
+    const expected = md5(`${MERCHANT_ID}:${amount}:${SECRET_2}:${orderId}`);
+    if (sign.toLowerCase() !== expected.toLowerCase()) {
+      return new NextResponse("bad_sign", { status: 400 });
+    }
+
+    // Достаём userId из нашего orderId (мы так формировали его в invoice)
+    // fk_<ts>_<userId>_<rnd>
+    const parts = (orderId || "").split("_");
+    const userId = Number(parts[2] || 0);
+    const amt = Math.floor(Number(amount));
+    if (!userId || !(amt > 0)) {
+      return new NextResponse("bad_data", { status: 400 });
+    }
+
+    await addBalance(userId, amt);
+
+    // Важно: FK ждёт любой 200 OK, чтобы засчитать колбэк как принятый
+    return new NextResponse("OK", { status: 200 });
+  } catch (e) {
+    console.error("fk callback error", e);
+    return new NextResponse("server_error", { status: 500 });
+  }
 }
