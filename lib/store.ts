@@ -172,3 +172,33 @@ export async function markProcessedOnce(orderId: string, ttlSeconds = 24 * 60 * 
   const ok = await c.set(processedOnceKey(orderId), "1", { NX: true, EX: ttlSeconds });
   return ok === "OK";
 }
+export type BetRecord = {
+  id: string;
+  userId: number;
+  amount: number;
+  chance: number;
+  dir: "under" | "over";
+  nonce: number;
+  placedAt: number;
+  outcome: {
+    value: number;
+    win: boolean;
+    payout: number;
+    coef: number;
+    proof: {
+      serverSeedHash: string;
+      serverSeed: string;
+      clientSeed: string;
+      hex: string;
+    };
+  };
+};
+
+/** Память на 100 последних записей. В твоём API используется `bets.unshift(rec)`. */
+export const bets: BetRecord[] = [];
+
+/** Удобная обёртка — можно вызывать вместо прямого unshift. */
+export function pushBet(bet: BetRecord) {
+  bets.unshift(bet);
+  if (bets.length > 100) bets.pop();
+}
