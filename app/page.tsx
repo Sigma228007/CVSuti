@@ -1,280 +1,221 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-type Dir = 'under' | 'over';
+type Method = 'card' | 'fkwallet';
 
-declare global {
-  interface Window {
-    Telegram?: any;
-  }
+function useInitData() {
+  const [initData, setInitData] = useState<string>('');
+  useEffect(() => {
+    try {
+      const tg = (globalThis as any)?.Telegram?.WebApp;
+      const raw = tg?.initData || '';
+      setInitData(typeof raw === 'string' ? raw : '');
+    } catch {
+      setInitData('');
+    }
+  }, []);
+  return initData;
 }
 
-function getInitData(): string {
-  try {
-    const tg = window?.Telegram?.WebApp;
-    return tg?.initData || '';
-  } catch {
-    return '';
-  }
-}
+const DEPOSIT_DETAILS =
+  process.env.NEXT_PUBLIC_DEPOSIT_DETAILS ||
+  process.env.NEXT_PUBLIC_DEPOSITS_DETAILS ||
+  '';
 
 export default function Page() {
-  // -------- state --------
+  const initData = useInitData();
+
   const [balance, setBalance] = useState<number>(0);
-  const [amount, setAmount] = useState<number>(100);
-  const [chance, setChance] = useState<number>(50);
-  const [dir, setDir] = useState<Dir>('under');
+  const [loadingBalance, setLoadingBalance] = useState(false);
 
-  const [depositOpen, setDepositOpen] = useState<boolean>(false);
-  const [depositTab, setDepositTab] = useState<'card' | 'fk'>('card');
-  const [depositAmt, setDepositAmt] = useState<number>(500);
+  const [amount, setAmount] = useState<number>(500);
+  const [tab, setTab] = useState<Method>('card');
+  const [busy, setBusy] = useState(false);
 
-  const [busy, setBusy] = useState<boolean>(false);
-  const initData = useMemo(getInitData, []);
-  const lastInvoice = useRef<{ url?: string } | null>(null);
+  const canCall = useMemo(() => initData && initData.length > 0, [initData]);
 
-  // -------- balance --------
-  const fetchBalance = async () => {
+  const fetchBalance = useCallback(async () => {
+    if (!canCall) return;
+    setLoadingBalance(true);
     try {
-      const r = await fetch('/api/balance', { method: 'GET', cache: 'no-store' });
-      if (!r.ok) return;
-      const d = await r.json();
-      if (typeof d.balance === 'number') setBalance(d.balance);
-    } catch {}
-  };
-
-  useEffect(() => {
-    fetchBalance();
-  }, []);
-
-  // при возврате из внешнего браузера проверяем баланс
-  useEffect(() => {
-    const onFocus = () => fetchBalance();
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, []);
-
-  // -------- bet --------
-  const placeBet = async () => {
-    if (busy) return;
-    try {
-      setBusy(true);
-      const r = await fetch('/api/bet', {
+      const r = await fetch('/api/balance', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          initData,
-          amount: Number(amount),
-          chance: Number(chance),
-          dir,
-        }),
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ initData }),
       });
-      const d = await r.json();
-      if (!r.ok || !d?.ok) return alert(d?.error || 'Ошибка при ставке');
-      if (typeof d.balance === 'number') setBalance(d.balance);
+      const d = await r.json().catch(() => ({}));
+      if (d?.ok && typeof d.balance === 'number') {
+        setBalance(d.balance);
+      }
     } catch {
-      alert('Сеть недоступна');
+      // игнор — просто не обновим баланс
     } finally {
-      setBusy(false);
+      setLoadingBalance(false);
     }
-  };
+  }, [canCall, initData]);
 
-  // -------- deposit (modal) --------
-  const openDeposit = () => {
-    setDepositAmt(500);
-    setDepositTab('card');
-    setDepositOpen(true);
-  };
-  const closeDeposit = () => setDepositOpen(false);
+  useEffect(() => {
+    // при первом монтировании и затем каждые 12 сек
+    fetchBalance();
+    const id = setInterval(fetchBalance, 12_000);
+    return () => clearInterval(id);
+  }, [fetchBalance]);
 
-  // Банковская карта — заявка в админку
-  const payByCard = async () => {
-    if (busy) return;
+  const onCreateCardInvoice = useCallback(async () => {
+    if (!canCall) return alert('WebApp initData недоступен.');
+    if (!amount || amount <= 0) return alert('Введите сумму > 0');
+
+    setBusy(true);
     try {
-      setBusy(true);
       const r = await fetch('/api/deposit/create', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, amount: depositAmt }),
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ initData, amount }),
       });
       const d = await r.json();
-      if (!r.ok || !d?.ok) return alert(d?.error || 'Не удалось создать заявку');
-
-      alert('Заявка отправлена. После подтверждения баланс обновится.');
-      closeDeposit();
-      fetchBalance();
+      if (!d?.ok) {
+        alert(d?.error || 'Не удалось создать пополнение');
+        return;
+      }
+      // далее админ подтверждает — баланс подтянется через опрос
+      alert('Заявка на пополнение создана. Ожидайте подтверждения.');
     } catch {
       alert('Сеть недоступна');
     } finally {
       setBusy(false);
     }
-  };
+  }, [canCall, initData, amount]);
 
-  // Касса (FKWallet/FreeKassa) — инвойс во внешнем браузере
-  const payByFK = async () => {
-    if (busy) return;
+  const onCreateFKWalletInvoice = useCallback(async () => {
+    if (!canCall) return alert('WebApp initData недоступен.');
+    if (!amount || amount <= 0) return alert('Введите сумму > 0');
+
+    setBusy(true);
     try {
-      setBusy(true);
       const r = await fetch('/api/fkwallet/invoice', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, amount: depositAmt }),
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ initData, amount }),
       });
       const d = await r.json();
-
-      if (!r.ok || !d?.ok) {
-        // 401/403 часто означает ошибку в FK_* переменных/подписи
-        return alert(d?.error || 'Не удалось создать счет в кассе');
-      }
-
-      if (d.url) {
-        lastInvoice.current = { url: d.url };
-        window.open(d.url, '_blank', 'noopener'); // внешняя вкладка
-        alert('Счет открыт во внешнем браузере. После оплаты вернитесь в мини-приложение — баланс обновится автоматически.');
-        closeDeposit();
+      if (d?.url) {
+        // В Telegram-мини-приложении внешняя ссылка открывается во внешнем браузере.
+        // Пользователь вернётся назад и баланс обновится автоматически.
+        window.open(d.url, '_blank');
       } else {
-        alert('Касса не вернула ссылку на оплату.');
+        alert(d?.error || 'Не удалось создать счёт в кассе');
       }
     } catch {
       alert('Сеть недоступна');
     } finally {
       setBusy(false);
     }
-  };
+  }, [canCall, initData, amount]);
 
-  // -------- ui helpers --------
-  const coef = useMemo(() => {
-    const edge = (10000 - 200) / 10000; // 2% дом (подстрой при желании)
-    const fair = 100 / Math.max(1, Math.min(95, chance));
-    return Math.max(1, Math.floor(fair * edge * 100) / 100);
-  }, [chance]);
-
-  // -------- render --------
   return (
-    <div className="wrap">
-      <header className="row between">
-        <div />
-        <div>
-          Баланс: <b>{balance} ₽</b>
-          <button className="btn-outline" style={{ marginLeft: 8 }} onClick={openDeposit}>
-            Пополнить
-          </button>
-        </div>
+    <main style={{ maxWidth: 720, margin: '0 auto', padding: 16 }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <h1 style={{ margin: 0 }}>GVsuti</h1>
+        <button
+          onClick={fetchBalance}
+          disabled={loadingBalance}
+          style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #444' }}
+        >
+          Баланс: {loadingBalance ? '…' : `${balance} ₽`}
+        </button>
       </header>
 
-      <section className="card">
-        <div className="label">Сумма ставки (1–10 000 ₽)</div>
-        <input
-          className="input"
-          type="number"
-          min={1}
-          max={10000}
-          value={amount}
-          onChange={(e) => setAmount(Math.max(1, Math.min(10000, parseInt(e.target.value || '0', 10))))}
-        />
-        <div className="row gap8 wrap" style={{ marginTop: 8 }}>
-          {[100, 500, 1000].map((v) => (
-            <button key={v} className="chip" onClick={() => setAmount(v)}>{v} ₽</button>
-          ))}
-        </div>
-
-        <div className="row between" style={{ marginTop: 12 }}>
-          <div>
-            <div className="label">Шанс (1–95%)</div>
-            <input
-              className="slider"
-              type="range"
-              min={1}
-              max={95}
-              value={chance}
-              onChange={(e) => setChance(parseInt(e.target.value, 10))}
-            />
-          </div>
-          <div className="badge">{chance}%</div>
-        </div>
-
-        <div className="row" style={{ marginTop: 12, gap: 8 }}>
-          <button className="btn-outline" onClick={() => setDir('under')} disabled={dir === 'under'}>
-            Меньше
+      <section style={{ marginTop: 20, padding: 16, border: '1px solid #333', borderRadius: 12 }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          <button
+            onClick={() => setTab('card')}
+            style={{
+              padding: '6px 10px',
+              borderRadius: 8,
+              border: '1px solid #444',
+              background: tab === 'card' ? '#1f6feb' : 'transparent',
+              color: tab === 'card' ? '#fff' : 'inherit',
+            }}
+          >
+            Банковская карта
           </button>
-          <button className="btn-outline" onClick={() => setDir('over')} disabled={dir === 'over'}>
-            Больше
+          <button
+            onClick={() => setTab('fkwallet')}
+            style={{
+              padding: '6px 10px',
+              borderRadius: 8,
+              border: '1px solid #444',
+              background: tab === 'fkwallet' ? '#1f6feb' : 'transparent',
+              color: tab === 'fkwallet' ? '#fff' : 'inherit',
+            }}
+          >
+            Касса (FKWallet)
           </button>
         </div>
 
-        <div className="row between" style={{ marginTop: 8 }}>
-          <div className="muted">Коэффициент: <b>×{coef}</b></div>
-          <div className="muted">Потенц. выплата: <b>{Math.floor(amount * coef)} ₽</b></div>
+        <label style={{ display: 'block', marginBottom: 8 }}>
+          Сумма
+          <input
+            type="number"
+            value={amount}
+            min={1}
+            onChange={(e) => setAmount(Math.max(0, Math.floor(Number(e.target.value || '0'))))}
+            style={{
+              width: '100%',
+              marginTop: 6,
+              padding: 10,
+              borderRadius: 10,
+              border: '1px solid #444',
+              background: 'transparent',
+              color: 'inherit',
+            }}
+          />
+        </label>
+
+        <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 12 }}>
+          Оплата через кассу (FKWallet / FreeKassa). Нажмите «Оплатить в кассе» — откроется
+          страница оплаты во внешнем браузере. После успешной оплаты баланс обновится автоматически.
         </div>
 
-        <div style={{ marginTop: 12 }}>
-          <button className="btn" disabled={busy} onClick={placeBet}>Сделать ставку</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {tab === 'card' ? (
+            <button
+              disabled={busy || !canCall}
+              onClick={onCreateCardInvoice}
+              style={{
+                padding: '10px 14px',
+                borderRadius: 10,
+                border: 'none',
+                background: '#2ea043',
+                color: '#fff',
+              }}
+            >
+              Создать заявку (карта)
+            </button>
+          ) : (
+            <button
+              disabled={busy || !canCall}
+              onClick={onCreateFKWalletInvoice}
+              style={{
+                padding: '10px 14px',
+                borderRadius: 10,
+                border: 'none',
+                background: '#2ea043',
+                color: '#fff',
+              }}
+            >
+              Оплатить в кассе
+            </button>
+          )}
         </div>
       </section>
 
-      {/* modal deposit */}
-      {depositOpen && (
-        <div className="overlay" onClick={closeDeposit}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="row gap8">
-              <button
-                className={`chip ${depositTab === 'card' ? 'active' : ''}`}
-                onClick={() => setDepositTab('card')}
-              >
-                Банковская карта
-              </button>
-              <button
-                className={`chip ${depositTab === 'fk' ? 'active' : ''}`}
-                onClick={() => setDepositTab('fk')}
-              >
-                Касса (FKWallet)
-              </button>
-            </div>
-
-            <div style={{ marginTop: 12 }}>
-              <div className="label">Сумма</div>
-              <input
-                className="input"
-                type="number"
-                min={1}
-                max={100000}
-                value={depositAmt}
-                onChange={(e) =>
-                  setDepositAmt(Math.max(1, Math.min(100000, parseInt(e.target.value || '0', 10))))
-                }
-              />
-            </div>
-
-            {depositTab === 'fk' ? (
-              <>
-                <div className="info" style={{ marginTop: 12 }}>
-                  Оплата через кассу (FKWallet / FreeKassa). Нажмите «Оплатить в кассе» — откроется
-                  внешняя страница оплаты. После успешной оплаты вернитесь в мини-приложение —
-                  баланс обновится автоматически.
-                </div>
-                <div className="row gap8" style={{ marginTop: 12 }}>
-                  <button className="btn-outline" onClick={closeDeposit}>Отмена</button>
-                  <button className="btn" disabled={busy} onClick={payByFK}>Оплатить в кассе</button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="info" style={{ marginTop: 12 }}>
-                  Создастся заявка на пополнение. После подтверждения администратором баланс увеличится.
-                </div>
-                <div className="row gap8" style={{ marginTop: 12 }}>
-                  <button className="btn-outline" onClick={closeDeposit}>Отмена</button>
-                  <button className="btn" disabled={busy} onClick={payByCard}>Отправить заявку</button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* при желании — бегущая строка событий */}
-      <div className="ticker" style={{ marginTop: 24 }} />
-    </div>
+      {DEPOSIT_DETAILS ? (
+        <section style={{ marginTop: 16, padding: 12, border: '1px dashed #444', borderRadius: 10, fontSize: 13, whiteSpace: 'pre-wrap' }}>
+          {DEPOSIT_DETAILS}
+        </section>
+      ) : null}
+    </main>
   );
 }
