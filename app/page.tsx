@@ -37,7 +37,7 @@ export default function Home() {
   // Deposit modal
   const [depositOpen, setDepositOpen] = useState(false);
   const [depositAmt, setDepositAmt] = useState<number>(500);
-  const [depTab, setDepTab] = useState<"card"|"cashdesk">("cashdesk"); // вкладки: карта / касса
+  const [depTab, setDepTab] = useState<"card"|"cashdesk">("card"); // вкладки: карта / касса
 
   // Admin
   const [pending, setPending] = useState<PendingDeposit[]>([]);
@@ -90,7 +90,7 @@ export default function Home() {
   }
 
   // Deposit flow
-  function openDeposit() { setDepositOpen(true); setDepositAmt(500); setDepTab("cashdesk"); }
+  function openDeposit() { setDepositOpen(true); setDepositAmt(500); setDepTab("card"); }
   function closeDeposit() { setDepositOpen(false); }
 
   // Карта (ручная модерация)
@@ -113,7 +113,7 @@ export default function Home() {
     }
   }
 
-  // КАССА (FKWallet / FreeKassa): открыть ссылку во внешнем браузере
+  // Касса (FKWallet / FreeKassa)
   async function payInCashdesk() {
     try {
       const r = await fetch("/api/fkwallet/invoice", {
@@ -130,7 +130,7 @@ export default function Home() {
 
       const tg = (typeof window !== "undefined") ? window.Telegram?.WebApp : undefined;
       if (tg?.openLink) {
-        tg.openLink(d.url, { try_browser: true }); // <-- ключевое
+        tg.openLink(d.url, { try_browser: true });
       } else {
         window.open(d.url, "_blank", "noopener,noreferrer");
       }
@@ -168,10 +168,9 @@ export default function Home() {
 
   useEffect(()=>{
     if (isAdmin) refreshPending();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
 
-  // DEMO feed (помечённая)
+  // DEMO feed
   const demoFeedOn = String(process.env.NEXT_PUBLIC_DEMO_FEED ?? '') === '1';
   const [demo, setDemo] = useState<any[]>([]);
   useEffect(()=>{
@@ -206,7 +205,7 @@ export default function Home() {
     <div className="container fade-in">
       <header className="row header">
         <div>
-          <div className="h1">Nvuti-style</div>
+          <div className="h1">GVSuti</div>
           <div className="sub">Проведённая честность • WebApp {process.env.NEXT_PUBLIC_BOT_NAME ?? ""}</div>
         </div>
         <div className="row gap8">
@@ -216,6 +215,7 @@ export default function Home() {
         </div>
       </header>
 
+      {/* --- СТАВКИ --- */}
       <main className="grid">
         <section className="card lift">
           <div className="label">Сумма ставки (1–10 000 ₽)</div>
@@ -248,6 +248,7 @@ export default function Home() {
           <div><button className="btn pulse" onClick={place} disabled={busy}>Сделать ставку</button></div>
         </section>
 
+        {/* --- Последние раунды --- */}
         <section className="card">
           <div className="row between">
             <b>Последние раунды</b>
@@ -263,6 +264,7 @@ export default function Home() {
           </ul>
         </section>
 
+        {/* --- Админка --- */}
         {isAdmin && (
           <section className="card">
             <div className="row between"><b>Админ • Пополнения</b><button className="btn-outline" onClick={refreshPending}>Обновить</button></div>
@@ -283,7 +285,7 @@ export default function Home() {
         )}
       </main>
 
-      {/* ДЕМО-лента активности (явно помечена) */}
+      {/* --- Лента активности --- */}
       {demoFeedOn && (
         <section className="demo">
           <div className="demo-title">Лента активности</div>
@@ -299,7 +301,7 @@ export default function Home() {
         </section>
       )}
 
-      {/* Модал пополнения */}
+      {/* --- Модал пополнения --- */}
       {depositOpen && (
         <div className="overlay" onClick={closeDeposit}>
           <div className="modal" onClick={(e)=>e.stopPropagation()}>
@@ -308,16 +310,10 @@ export default function Home() {
 
             {/* Табы */}
             <div className="row gap8" style={{marginBottom:12}}>
-              <button
-                className={depTab==='card' ? 'chip ok' : 'chip'}
-                onClick={()=>setDepTab('card')}
-              >
+              <button className={depTab==='card' ? 'chip ok' : 'chip'} onClick={()=>setDepTab('card')}>
                 Банковская карта
               </button>
-              <button
-                className={depTab==='cashdesk' ? 'chip ok' : 'chip'}
-                onClick={()=>setDepTab('cashdesk')}
-              >
+              <button className={depTab==='cashdesk' ? 'chip ok' : 'chip'} onClick={()=>setDepTab('cashdesk')}>
                 Касса (FKWallet)
               </button>
             </div>
