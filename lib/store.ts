@@ -136,3 +136,40 @@ export async function declineDeposit(id: string): Promise<Deposit | null> {
   await saveDeposit(dep);
   return dep;
 }
+export async function listPending(limit: number = 50): Promise<Deposit[]> {
+  const c = await redis();
+  let cursor = "0";
+  const out: Deposit[] = [];
+
+  do {
+    // SCAN по ключам депов
+    // @ts-expect-error — у клиента типы SCAN могут быть перегружены
+    const [next, keys]: [string, string[]] = await c.scan(cursor, {
+      MATCH: "dep:*",
+      COUNT: 100,
+    });
+    cursor = next;
+
+    if (keys && keys.length) {
+      const vals = await c.mGet(keys);
+      for (const v of vals) {
+        if (!v) continue;
+        try {
+          const dep = JSON.parse(v) as Deposit;
+          if (dep.status === "pending") out.push(dep);
+        } catch {}
+      }
+    }
+
+    // если уже набрали лимит — можно завершать
+    if (out.length >= limit) break;
+  } while (cursor !== "0");
+
+  // сортируем по времени создания, свежие сверху
+  out.sort((a, b) => b.createdAt - a.createdAt);
+
+  return out.slice(0, limit);
+}
+
+// На случай, если в коде ожидается старое имя:
+export const getPendingAll = listPending;
