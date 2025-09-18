@@ -1,16 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 
-// Нужные ENV:
-// FK_MERCHANT_ID=12345
-// FK_SECRET_1=xxx
-// CURRENCY=RUB (по умолчанию RUB)
-// BOT_TOKEN=<токен телеграм-бота>
-
 type TgUser = { id: number; first_name?: string; username?: string };
 
-function verifyInitData(initData: string, botToken: string): { ok: boolean; user?: TgUser } {
+function verifyInitData(initData: string, botToken: string) {
   try {
+    if (!initData || !botToken) return { ok: false, reason: "missing_init_or_token" };
     const params = new URLSearchParams(initData);
     const hash = params.get("hash") || "";
     params.delete("hash");
@@ -23,69 +18,52 @@ function verifyInitData(initData: string, botToken: string): { ok: boolean; user
     const secretKey = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
     const myHash = crypto.createHmac("sha256", secretKey).update(dataCheckString).digest("hex");
 
-    if (myHash !== hash) return { ok: false };
+    if (myHash !== hash) return { ok: false, reason: "bad_signature" };
+
     const userStr = params.get("user");
-    if (!userStr) return { ok: false };
+    if (!userStr) return { ok: false, reason: "no_user" };
+
     const user = JSON.parse(userStr) as TgUser;
     return { ok: true, user };
-  } catch {
-    return { ok: false };
+  } catch (e) {
+    return { ok: false, reason: "exception" };
   }
-}
-
-function md5(s: string) {
-  return crypto.createHash("md5").update(s).digest("hex");
 }
 
 export async function POST(req: NextRequest) {
-  try {
-    const { initData, amount } = (await req.json()) as { initData?: string; amount?: number };
+  const { initData, amount } = (await req.json()) as { initData?: string; amount?: number };
 
-    const BOT_TOKEN = process.env.BOT_TOKEN || "";
-    const MERCHANT_ID = process.env.FK_MERCHANT_ID || "";
-    const SECRET_1 = process.env.FK_SECRET_1 || "";
-    const CURRENCY = process.env.CURRENCY || "RUB";
-
-    if (!BOT_TOKEN) {
-      return NextResponse.json({ ok: false, error: "BOT_TOKEN missing" }, { status: 500 });
-    }
-    if (!MERCHANT_ID || !SECRET_1) {
-      return NextResponse.json({ ok: false, error: "FreeKassa env missing" }, { status: 500 });
-    }
-    if (!initData || !amount || amount <= 0) {
-      return NextResponse.json({ ok: false, error: "bad input" }, { status: 400 });
-    }
-
-    const v = verifyInitData(initData, BOT_TOKEN);
-    if (!v.ok || !v.user) {
-      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
-    }
-
-    const userId = v.user.id;
-    const orderId = `fk_${Date.now()}_${userId}_${Math.floor(Math.random() * 1e6)}`;
-
-    // Подпись FreeKassa: s = md5(MERCHANT_ID:AMOUNT:SECRET_1:ORDER_ID)
-    // (для стандартной схемы). Сумма должна быть строкой в «обычной» десятичной записи.
-    const amt = String(Number(amount));
-    const sign = md5(`${MERCHANT_ID}:${amt}:${SECRET_1}:${orderId}`);
-
-    // URL на оплату
-    const params = new URLSearchParams({
-      m: MERCHANT_ID,
-      oa: amt,
-      o: orderId,
-      s: sign,
-      currency: CURRENCY,
-    });
-
-    const payUrl = `https://pay.freekassa.ru/?${params.toString()}`;
-
-    // Можно сохранить orderId → userId локально (для доп. контроля),
-    // но в нашем колбэке мы всё равно проверим подпись FK (SECRET_2).
-
-    return NextResponse.json({ ok: true, url: payUrl, orderId });
-  } catch (e) {
-    console.error("fk invoice error", e);
-    return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
+  const BOT_TOKEN = process.env.BOT_TOKEN || "";
+  if (!BOT_TOKEN) {
+    return NextResponse.json({ ok: false, error: "BOT_TOKEN_missing" }, { status: 500 });
   }
+
+  const v = verifyInitData(initData || "", BOT_TOKEN);
+  if (!v.ok) {
+    // вернём reason, чтобы в консоли сразу было видно ПОЧЕМУ 401
+    return NextResponse.json({ ok: false, error: "unauthorized", reason: v.reason }, { status: 401 });
+  }
+
+  if (!amount || amount <= 0) {
+    return NextResponse.json({ ok: false, error: "bad_amount" }, { status: 400 });
+  }
+
+  // --- формируем ссылку на платёж FKWallet / FreeKassa ---
+  const MERCHANT_ID = process.env.FK_MERCHANT_ID;
+  const SECRET_1 = process.env.FK_SECRET_1;
+  if (!MERCHANT_ID || !SECRET_1) {
+    return NextResponse.json({ ok: false, error: "fk_env_missing" }, { status: 500 });
+  }
+
+  const orderId = `dep_${Date.now()}_${v.user!.id}`;
+  const sign = crypto
+    .createHash("md5")
+    .update(`${MERCHANT_ID}:${amount}:${SECRET_1}:${orderId}`)
+    .digest("hex");
+
+  // классическая форма FreeKassa
+  const url = `https://pay.freekassa.ru/?m=${MERCHANT_ID}&oa=${amount}&o=${orderId}&s=${sign}&currency=RUB`;
+
+  // возвращаем ссылку, фронт откроет её во внешнем браузере
+  return NextResponse.json({ ok: true, url, orderId });
 }
