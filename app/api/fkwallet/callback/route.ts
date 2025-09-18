@@ -1,74 +1,61 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { addBalance } from "@/lib/store";
 import { redis } from "@/lib/redis";
+import { addBalance } from "@/lib/store"; // у тебя есть addBalance(uid, delta)
 
-function md5(s: string) {
-  return crypto.createHash("md5").update(s).digest("hex");
-}
-
-/**
- * Примерный формат Freekassa уведомления:
- * POST: { m: merchant, oa: amount, o: orderId, s: sign, ... }
- * sign = md5(merchant:amount:secret2:orderId)  (проверьте в docs)
- */
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
-    const data = await req.formData();
-    const m = data.get("m")?.toString() || data.get("MERCHANT_ID")?.toString() || "";
-    const oa = data.get("oa")?.toString() || data.get("AMOUNT")?.toString() || "";
-    const orderId = data.get("o")?.toString() || data.get("ORDER_ID")?.toString() || "";
-    const sign = data.get("s")?.toString() || "";
+    // FK шлет либо form-urlencoded, либо query
+    const url = new URL(req.url);
+    const q = url.searchParams;
 
-    if (!m || !oa || !orderId || !sign) {
-      console.warn("callback missing params", { m, oa, orderId, sign });
-      return new Response("bad params", { status: 400 });
+    // универсально достанем поля
+    // m - merchant id, oa - amount, o - order id, s - sign
+    const merchant = q.get("m") || "";
+    const amountStr = q.get("oa") || "";
+    const orderId = q.get("o") || "";
+    const s = (q.get("s") || "").toLowerCase();
+
+    if (!merchant || !amountStr || !orderId || !s) {
+      return new NextResponse("NO", { status: 400 });
     }
 
     const secret2 = process.env.FK_SECRET_2 || "";
-    if (!secret2) return new Response("server misconfig", { status: 500 });
+    if (!secret2) return new NextResponse("NO", { status: 500 });
 
-    // Проверяем подпись
-    const expected = md5(`${m}:${oa}:${secret2}:${orderId}`);
-    if (expected !== sign) {
-      console.warn("bad sign", { expected, got: sign });
-      return new Response("bad sign", { status: 403 });
+    // подпись результата: md5(`${merchant}:${amount}:${secret2}:${orderId}`)
+    const calc = crypto
+      .createHash("md5")
+      .update(`${merchant}:${amountStr}:${secret2}:${orderId}`)
+      .digest("hex");
+
+    if (calc !== s) {
+      return new NextResponse("NO", { status: 403 });
     }
 
-    // Получаем userId из redis по orderId (если сохранено)
-    let userId: number | null = null;
-    try {
-      const client = await redis();
-      const s = await client.get(`dep:${orderId}`);
-      if (s) {
-        const parsed = JSON.parse(s);
-        userId = parsed.userId;
-      }
-    } catch (e) {
-      console.error("redis read error", e);
+    // проверим заказ
+    const c = await redis();
+    const saved = await c.hGetAll(`fk:order:${orderId}`);
+    if (!saved || !saved.uid || !saved.amount) {
+      // двойные нотификации? уже обработано
+      return new NextResponse("YES"); // FK ожидает "YES"
     }
 
-    const amount = Math.floor(Number(oa));
-    if (!userId) {
-      // если userId не найден, возможно нужно сопоставлять по другим данным.
-      console.warn("user not found for order", orderId);
-      // Тем не менее можно логировать и вернуть OK, Freekassa не будет повторять.
-      return new Response("no user", { status: 200 });
+    const uid = Number(saved.uid);
+    const amt = Math.floor(Number(saved.amount));
+    if (amt > 0 && Number.isFinite(uid)) {
+      await addBalance(uid, amt);
     }
 
-    // Зачисляем
-    try {
-      await addBalance(userId, amount);
-      console.log(`credited ${amount} to ${userId} order ${orderId}`);
-    } catch (err) {
-      console.error("credit error", err);
-      return new Response("error", { status: 500 });
-    }
+    // пометим как обработанный
+    await c.del(`fk:order:${orderId}`);
 
-    // Вернём 200 — Freekassa посчитает уведомление принятым
-    return new Response("OK", { status: 200 });
+    return new NextResponse("YES"); // FK считает успешным только буквальный "YES"
   } catch (e) {
-    console.error("callback error", e);
-    return new Response("server error", { status: 500 });
+    console.error("FK callback error:", e);
+    return new NextResponse("NO", { status: 500 });
   }
 }
+
+// На всякий случай поддержим и GET (иногда так настраивают)
+export const GET = POST;

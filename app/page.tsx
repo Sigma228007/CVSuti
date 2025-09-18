@@ -11,7 +11,6 @@ declare global {
 }
 
 function getInitData(): string {
-  // Telegram Mini App initData (безопасная строка для бэкенда)
   try {
     const tg = window?.Telegram?.WebApp;
     return tg?.initData || '';
@@ -21,7 +20,7 @@ function getInitData(): string {
 }
 
 export default function Page() {
-  // ======== Состояния ========
+  // -------- state --------
   const [balance, setBalance] = useState<number>(0);
   const [amount, setAmount] = useState<number>(100);
   const [chance, setChance] = useState<number>(50);
@@ -30,19 +29,18 @@ export default function Page() {
   const [depositOpen, setDepositOpen] = useState<boolean>(false);
   const [depositTab, setDepositTab] = useState<'card' | 'fk'>('card');
   const [depositAmt, setDepositAmt] = useState<number>(500);
-  const [busy, setBusy] = useState<boolean>(false);
 
+  const [busy, setBusy] = useState<boolean>(false);
   const initData = useMemo(getInitData, []);
   const lastInvoice = useRef<{ url?: string } | null>(null);
 
-  // ======== Баланс ========
+  // -------- balance --------
   const fetchBalance = async () => {
     try {
-      const r = await fetch('/api/balance', { method: 'GET', cache: 'no-cache' });
-      if (r.ok) {
-        const d = await r.json();
-        if (typeof d.balance === 'number') setBalance(d.balance);
-      }
+      const r = await fetch('/api/balance', { method: 'GET', cache: 'no-store' });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (typeof d.balance === 'number') setBalance(d.balance);
     } catch {}
   };
 
@@ -50,19 +48,18 @@ export default function Page() {
     fetchBalance();
   }, []);
 
-  // обновление при возврате из внешнего окна
+  // при возврате из внешнего браузера проверяем баланс
   useEffect(() => {
     const onFocus = () => fetchBalance();
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, []);
 
-  // ======== Ставка ========
+  // -------- bet --------
   const placeBet = async () => {
+    if (busy) return;
     try {
-      if (busy) return;
       setBusy(true);
-
       const r = await fetch('/api/bet', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -73,13 +70,8 @@ export default function Page() {
           dir,
         }),
       });
-
       const d = await r.json();
-      if (!r.ok || !d.ok) {
-        alert(d?.error || 'Ошибка при ставке');
-        return;
-      }
-      // баланс с бэка — самый верный
+      if (!r.ok || !d?.ok) return alert(d?.error || 'Ошибка при ставке');
       if (typeof d.balance === 'number') setBalance(d.balance);
     } catch {
       alert('Сеть недоступна');
@@ -88,7 +80,7 @@ export default function Page() {
     }
   };
 
-  // ======== ДЕПОЗИТ ========
+  // -------- deposit (modal) --------
   const openDeposit = () => {
     setDepositAmt(500);
     setDepositTab('card');
@@ -96,7 +88,7 @@ export default function Page() {
   };
   const closeDeposit = () => setDepositOpen(false);
 
-  // Карта — как у тебя было, просто аккуратно вызов
+  // Банковская карта — заявка в админку
   const payByCard = async () => {
     if (busy) return;
     try {
@@ -107,11 +99,8 @@ export default function Page() {
         body: JSON.stringify({ initData, amount: depositAmt }),
       });
       const d = await r.json();
-      if (!r.ok || !d?.ok) {
-        alert(d?.error || 'Не удалось создать заявку на пополнение');
-        return;
-      }
-      // У тебя после подтверждения админом приходило уведомление — обновим баланс с фокусом
+      if (!r.ok || !d?.ok) return alert(d?.error || 'Не удалось создать заявку');
+
       alert('Заявка отправлена. После подтверждения баланс обновится.');
       closeDeposit();
       fetchBalance();
@@ -122,7 +111,7 @@ export default function Page() {
     }
   };
 
-  // Касса (FKWallet / FreeKassa)
+  // Касса (FKWallet/FreeKassa) — инвойс во внешнем браузере
   const payByFK = async () => {
     if (busy) return;
     try {
@@ -135,17 +124,14 @@ export default function Page() {
       const d = await r.json();
 
       if (!r.ok || !d?.ok) {
-        // 401/403 → обычно неверные ключи/подписи/merchantId
-        alert(d?.error || 'Не удалось создать счет в кассе');
-        return;
+        // 401/403 часто означает ошибку в FK_* переменных/подписи
+        return alert(d?.error || 'Не удалось создать счет в кассе');
       }
 
       if (d.url) {
         lastInvoice.current = { url: d.url };
-        // открываем во внешнем браузере (в Telegram WebApp это откроет внешнюю вкладку)
-        window.open(d.url, '_blank', 'noopener');
-        // пользователь вернется — onFocus дернет fetchBalance()
-        alert('Счет открыт во внешнем браузере. После оплаты вернитесь в приложение — баланс обновится автоматически.');
+        window.open(d.url, '_blank', 'noopener'); // внешняя вкладка
+        alert('Счет открыт во внешнем браузере. После оплаты вернитесь в мини-приложение — баланс обновится автоматически.');
         closeDeposit();
       } else {
         alert('Касса не вернула ссылку на оплату.');
@@ -157,18 +143,18 @@ export default function Page() {
     }
   };
 
-  // ======== UI ========
+  // -------- ui helpers --------
   const coef = useMemo(() => {
-    // то же самое, что было у тебя: храним простую логику коэффициента
-    const edge = (10000 - 200) / 10000; // 2% дом
+    const edge = (10000 - 200) / 10000; // 2% дом (подстрой при желании)
     const fair = 100 / Math.max(1, Math.min(95, chance));
     return Math.max(1, Math.floor(fair * edge * 100) / 100);
   }, [chance]);
 
+  // -------- render --------
   return (
     <div className="wrap">
       <header className="row between">
-        <div>UID: <span className="k">{/* uid показываем из TG, если нужно */}</span></div>
+        <div />
         <div>
           Баланс: <b>{balance} ₽</b>
           <button className="btn-outline" style={{ marginLeft: 8 }} onClick={openDeposit}>
@@ -209,18 +195,10 @@ export default function Page() {
         </div>
 
         <div className="row" style={{ marginTop: 12, gap: 8 }}>
-          <button
-            className="btn-outline"
-            onClick={() => setDir('under')}
-            disabled={dir === 'under'}
-          >
+          <button className="btn-outline" onClick={() => setDir('under')} disabled={dir === 'under'}>
             Меньше
           </button>
-          <button
-            className="btn-outline"
-            onClick={() => setDir('over')}
-            disabled={dir === 'over'}
-          >
+          <button className="btn-outline" onClick={() => setDir('over')} disabled={dir === 'over'}>
             Больше
           </button>
         </div>
@@ -235,11 +213,10 @@ export default function Page() {
         </div>
       </section>
 
-      {/* Модалка пополнения */}
+      {/* modal deposit */}
       {depositOpen && (
         <div className="overlay" onClick={closeDeposit}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-
             <div className="row gap8">
               <button
                 className={`chip ${depositTab === 'card' ? 'active' : ''}`}
@@ -273,7 +250,7 @@ export default function Page() {
               <>
                 <div className="info" style={{ marginTop: 12 }}>
                   Оплата через кассу (FKWallet / FreeKassa). Нажмите «Оплатить в кассе» — откроется
-                  страница оплаты во внешнем браузере. После успешной оплаты вернитесь в мини-приложение —
+                  внешняя страница оплаты. После успешной оплаты вернитесь в мини-приложение —
                   баланс обновится автоматически.
                 </div>
                 <div className="row gap8" style={{ marginTop: 12 }}>
@@ -296,12 +273,8 @@ export default function Page() {
         </div>
       )}
 
-      {/* Небольшая бегущая строка (как у тебя — пример) */}
-      <div className="ticker" style={{ marginTop: 24 }}>
-        <div>
-          {/* Можно подставить последние 30 событий/ставок, если есть */}
-        </div>
-      </div>
+      {/* при желании — бегущая строка событий */}
+      <div className="ticker" style={{ marginTop: 24 }} />
     </div>
   );
 }
