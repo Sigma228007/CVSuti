@@ -1,69 +1,89 @@
-import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
+import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'crypto';
 
 type TgUser = { id: number; first_name?: string; username?: string };
 
-function verifyInitData(initData: string, botToken: string) {
+function verifyInitData(initData: string, botToken: string): { ok: boolean; user?: TgUser } {
   try {
-    if (!initData || !botToken) return { ok: false, reason: "missing_init_or_token" };
     const params = new URLSearchParams(initData);
-    const hash = params.get("hash") || "";
-    params.delete("hash");
+    const hash = params.get('hash') || '';
+    params.delete('hash');
 
     const dataCheckString = Array.from(params.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([k, v]) => `${k}=${v}`)
-      .join("\n");
+      .join('\n');
 
-    const secretKey = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
-    const myHash = crypto.createHmac("sha256", secretKey).update(dataCheckString).digest("hex");
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+    const myHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
 
-    if (myHash !== hash) return { ok: false, reason: "bad_signature" };
-
-    const userStr = params.get("user");
-    if (!userStr) return { ok: false, reason: "no_user" };
-
+    if (myHash !== hash) return { ok: false };
+    const userStr = params.get('user');
+    if (!userStr) return { ok: false };
     const user = JSON.parse(userStr) as TgUser;
+    if (!user || typeof user.id !== 'number') return { ok: false };
     return { ok: true, user };
-  } catch (e) {
-    return { ok: false, reason: "exception" };
+  } catch {
+    return { ok: false };
   }
 }
 
+/**
+ * Создает счёт в FreeKassa (классический URL).
+ * ОЖИДАЕТ: { initData?: string; amount: number }
+ * ВОЗВРАЩАЕТ: { ok: true, url, orderId, userId? }
+ */
 export async function POST(req: NextRequest) {
-  const { initData, amount } = (await req.json()) as { initData?: string; amount?: number };
+  const body = await req.json().catch(() => ({}));
+  const initData: string | undefined = body?.initData;
+  const amount: number = Number(body?.amount);
 
-  const BOT_TOKEN = process.env.BOT_TOKEN || "";
-  if (!BOT_TOKEN) {
-    return NextResponse.json({ ok: false, error: "BOT_TOKEN_missing" }, { status: 500 });
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return NextResponse.json({ ok: false, error: 'bad amount' }, { status: 400 });
   }
 
-  const v = verifyInitData(initData || "", BOT_TOKEN);
-  if (!v.ok) {
-    // вернём reason, чтобы в консоли сразу было видно ПОЧЕМУ 401
-    return NextResponse.json({ ok: false, error: "unauthorized", reason: v.reason }, { status: 401 });
+  // Если хотим привязать платёж к пользователю из Telegram WebApp — валидируем initData
+  let userId: number | null = null;
+  if (initData) {
+    const botToken = process.env.BOT_TOKEN || '';
+    if (!botToken) {
+      return NextResponse.json({ ok: false, error: 'BOT_TOKEN missing' }, { status: 500 });
+    }
+    const res = verifyInitData(initData, botToken);
+    if (!res.ok || !res.user) {
+      return NextResponse.json({ ok: false, error: 'bad initData' }, { status: 401 });
+    }
+    userId = res.user.id;
   }
 
-  if (!amount || amount <= 0) {
-    return NextResponse.json({ ok: false, error: "bad_amount" }, { status: 400 });
+  const merchant = process.env.FK_MERCHANT_ID || '';
+  const secret1 = process.env.FK_SECRET_1 || '';
+  // FK_SECRET_2 нужен для callback-подписи, но не для создания ссылки
+  if (!merchant || !secret1) {
+    return NextResponse.json({ ok: false, error: 'FK config missing' }, { status: 500 });
   }
 
-  // --- формируем ссылку на платёж FKWallet / FreeKassa ---
-  const MERCHANT_ID = process.env.FK_MERCHANT_ID;
-  const SECRET_1 = process.env.FK_SECRET_1;
-  if (!MERCHANT_ID || !SECRET_1) {
-    return NextResponse.json({ ok: false, error: "fk_env_missing" }, { status: 500 });
-  }
+  // Сгенерим orderId и (рекомендуется) сохранить мапу orderId -> userId в Redis,
+  // чтобы в /api/fkwallet/callback понять, кому зачислять баланс.
+  // Пример: await redis.hSet('fk:orders', orderId, String(userId ?? ''));
+  const orderId = `dep_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
 
-  const orderId = `dep_${Date.now()}_${v.user!.id}`;
+  // FreeKassa classic signature:
+  // md5(merchant_id:amount:secret_word_1:order_id)
+  const amountFixed = amount.toFixed(2);
   const sign = crypto
-    .createHash("md5")
-    .update(`${MERCHANT_ID}:${amount}:${SECRET_1}:${orderId}`)
-    .digest("hex");
+    .createHash('md5')
+    .update(`${merchant}:${amountFixed}:${secret1}:${orderId}`)
+    .digest('hex');
 
-  // классическая форма FreeKassa
-  const url = `https://pay.freekassa.ru/?m=${MERCHANT_ID}&oa=${amount}&o=${orderId}&s=${sign}&currency=RUB`;
+  // Можно добавлять currency=RUB, описание и т.д.
+  const url =
+    `https://pay.freekassa.ru/?` +
+    `m=${encodeURIComponent(merchant)}` +
+    `&oa=${encodeURIComponent(amountFixed)}` +
+    `&o=${encodeURIComponent(orderId)}` +
+    `&s=${encodeURIComponent(sign)}` +
+    `&currency=RUB`;
 
-  // возвращаем ссылку, фронт откроет её во внешнем браузере
-  return NextResponse.json({ ok: true, url, orderId });
+  return NextResponse.json({ ok: true, url, orderId, userId });
 }

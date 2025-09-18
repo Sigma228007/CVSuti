@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { getBalance } from "@/lib/store";
 
-type TgUser = { id: number };
+// Небольшая валидация initData по тем же правилам, что и в /api/bet
+type TgUser = { id: number; first_name?: string; username?: string };
 
-function verify(initData: string, botToken: string): number | null {
+function verifyInitData(initData: string, botToken: string): { ok: boolean; user?: TgUser } {
   try {
     const params = new URLSearchParams(initData);
     const hash = params.get("hash") || "";
@@ -17,25 +18,70 @@ function verify(initData: string, botToken: string): number | null {
 
     const secretKey = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
     const myHash = crypto.createHmac("sha256", secretKey).update(dataCheckString).digest("hex");
-    if (myHash !== hash) return null;
 
+    if (myHash !== hash) return { ok: false };
     const userStr = params.get("user");
-    if (!userStr) return null;
-
+    if (!userStr) return { ok: false };
     const user = JSON.parse(userStr) as TgUser;
-    return user.id;
+    return { ok: true, user };
   } catch {
-    return null;
+    return { ok: false };
+  }
+}
+
+// Универсальный обработчик, чтобы поддержать и GET, и POST
+async function handle(req: NextRequest) {
+  try {
+    const botToken = process.env.BOT_TOKEN || "";
+    if (!botToken) {
+      return NextResponse.json({ ok: false, error: "BOT_TOKEN missing" }, { status: 500 });
+    }
+
+    // initData принимаем из хэдера / query / body
+    let initData =
+      req.headers.get("x-init-data") ||
+      new URL(req.url).searchParams.get("initData") ||
+      "";
+
+    if (!initData && req.method === "POST") {
+      try {
+        const body = await req.json();
+        initData = body?.initData || "";
+      } catch {
+        // пустое тело — ок
+      }
+    }
+
+    if (!initData) {
+      return NextResponse.json({ ok: false, error: "no initData" }, { status: 401 });
+    }
+
+    const v = verifyInitData(initData, botToken);
+    if (!v.ok || !v.user) {
+      return NextResponse.json({ ok: false, error: "bad initData" }, { status: 401 });
+    }
+
+    const userId = v.user.id;
+    const balance = await getBalance(userId);
+
+    return NextResponse.json(
+      { ok: true, balance },
+      {
+        status: 200,
+        headers: {
+          "Cache-Control": "no-store, max-age=0",
+        },
+      },
+    );
+  } catch (e) {
+    return NextResponse.json({ ok: false, error: "server error" }, { status: 500 });
   }
 }
 
 export async function GET(req: NextRequest) {
-  const BOT_TOKEN = process.env.BOT_TOKEN || "";
-  const initData = req.nextUrl.searchParams.get("initData") || "";
+  return handle(req);
+}
 
-  const uid = verify(initData, BOT_TOKEN);
-  if (!uid) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
-
-  const balance = await getBalance(uid);
-  return NextResponse.json({ ok: true, balance });
+export async function POST(req: NextRequest) {
+  return handle(req);
 }
