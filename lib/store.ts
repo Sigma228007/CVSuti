@@ -1,81 +1,32 @@
-export type BetRecord = {
-  id: string;
-  userId: number;
-  amount: number;
-  chance: number;
-  dir: 'over' | 'under';
-  placedAt: number;
-  nonce: number;
-  outcome: {
-    value: number;
-    win: boolean;
-    payout: number;
-    coef: number;
-    proof: {
-      serverSeedHash: string;
-      serverSeed: string;
-      clientSeed: string;
-      hex: string;
-    };
-  };
-};
+import { redis } from './redis';
 
-export type DepositRequest = {
-  id: string;
-  userId: number;
-  amount: number;
-  createdAt: number;
-  status: 'pending' | 'approved' | 'declined';
-};
+const balKey = (uid: number) => `u:${uid}:balance`;
+const dataKey = (uid: number) => `u:${uid}:data`;
 
-const balances = new Map<number, number>();
-export const bets: BetRecord[] = [];
-export const deposits: DepositRequest[] = [];
-
-// Баланс
-export function getBalance(uid: number) {
-  return balances.get(uid) ?? 0;
-}
-export function setBalance(uid: number, v: number) {
-  balances.set(uid, v);
+export async function getBalance(uid: number): Promise<number> {
+  const r = await (await redis()).get(balKey(uid));
+  return r ? parseInt(r, 10) : 0;
 }
 
-export function addBalance(userId: number, delta: number) {
-  setBalance(userId, getBalance(userId) + delta);
+export async function setBalance(uid: number, value: number): Promise<number> {
+  await (await redis()).set(balKey(uid), String(Math.max(0, Math.floor(value))));
+  return getBalance(uid);
 }
 
-// Nonce per user (для fair roll)
-const nonces = new Map<number, number>();
-export function getNonce(uid: number) {
-  const n = nonces.get(uid) ?? 0;
-  nonces.set(uid, n + 1);
-  return n;
-}
-
-// Deposits
-export function createDeposit(userId: number, amount: number): DepositRequest {
-  const rec: DepositRequest = {
-    id: `dep_${Date.now()}_${userId}_${Math.random().toString(36).slice(2, 8)}`,
-    userId,
-    amount,
-    createdAt: Date.now(),
-    status: 'pending',
-  };
-  deposits.unshift(rec);
-  return rec;
-}
-
-export function listPendingDeposits(): DepositRequest[] {
-  return deposits.filter(d => d.status === 'pending');
-}
-
-export function setDepositStatus(id: string, status: 'approved' | 'declined'): DepositRequest | undefined {
-  const d = deposits.find(x => x.id === id);
-  if (!d) return undefined;
-  d.status = status;
-  if (status === 'approved') {
-    const cur = getBalance(d.userId);
-    setBalance(d.userId, cur + d.amount);
+export async function addBalance(uid: number, delta: number): Promise<number> {
+  const c = await redis();
+  const v = await c.incrBy(balKey(uid), Math.floor(delta));
+  if (v < 0) {
+    await c.set(balKey(uid), '0');
+    return 0;
   }
-  return d;
+  return v;
+}
+
+export async function upsertUser(uid: number, data: Record<string, any>) {
+  const c = await redis();
+  await c.hSet(
+    dataKey(uid),
+    Object.fromEntries(Object.entries(data).map(([k, v]) => [k, JSON.stringify(v)])),
+  );
 }
