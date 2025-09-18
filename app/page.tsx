@@ -1,353 +1,252 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
-declare global { interface Window { Telegram?: any } }
-type TUser = { id: number; first_name?: string; username?: string };
-type PendingDeposit = { id: string; userId: number; amount: number; createdAt: number; status: string };
+/** Безопасный доступ к Telegram WebApp */
+function getInitDataFromTMA(): string {
+  // 1) Telegram WebApp JS
+  // @ts-ignore
+  const tma = typeof window !== "undefined" ? window.Telegram?.WebApp : undefined;
+  const fromTMA = tma?.initData || "";
+  if (fromTMA) return fromTMA;
 
-function getInitData(): string {
-  if (typeof window === "undefined") return "";
-  const tg = window.Telegram?.WebApp;
-  if (tg?.initData) return tg.initData;
-  const url = new URL(window.location.href);
-  const m = (url.hash||"").match(/tgWebAppData=([^&]+)/);
-  if (m?.[1]) return decodeURIComponent(m[1]);
-  const q = url.searchParams.get("tgWebAppData");
-  if (q) return decodeURIComponent(q);
+  // 2) Параметр из URL (иногда хосты кладут initData в query)
+  if (typeof window !== "undefined") {
+    const u = new URL(window.location.href);
+    const q = u.searchParams.get("tma_initData") || u.searchParams.get("initData");
+    if (q) return q;
+  }
+
   return "";
 }
 
-export default function Home() {
-  // Auth
-  const [user, setUser] = useState<TUser|null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [authError, setAuthError] = useState<string|null>(null);
-  const initData = useMemo(()=>getInitData(), []);
+/** Небольшой helper для сообщений */
+function toast(msg: string) {
+  try {
+    // легкий UX, без сторонних либ
+    alert(msg);
+  } catch {}
+}
 
-  // Game state
-  const [balance, setBalance] = useState<number>(0);
-  const [amount, setAmount] = useState<number>(100);
-  const [chance, setChance] = useState<number>(50);
-  const [dir, setDir] = useState<"under"|"over">("under");
-  const [coef, setCoef] = useState<number>(0);
-  const [log, setLog] = useState<any[]>([]);
-  const [busy, setBusy] = useState(false);
+type InvoiceResp = { ok: true; url: string } | { ok: false; error: string };
 
-  // Deposit modal
+export default function Page() {
+  const [initData, setInitData] = useState<string>("");
+  const [balance, setBalance] = useState<number | null>(null);
   const [depositOpen, setDepositOpen] = useState(false);
-  const [depositAmt, setDepositAmt] = useState<number>(500);
-  const [depTab, setDepTab] = useState<"card"|"cashdesk">("card"); // вкладки: карта / касса
+  const [depositTab, setDepositTab] = useState<"card" | "fk">("fk");
+  const [amount, setAmount] = useState<number>(50);
+  const [loading, setLoading] = useState(false);
 
-  // Admin
-  const [pending, setPending] = useState<PendingDeposit[]>([]);
-  const isAdmin = useMemo(()=>{
-    const ids = (process.env.NEXT_PUBLIC_ADMIN_IDS ?? '').split(',').map(s=>Number(s.trim())).filter(Boolean);
-    return !!user && ids.includes(user.id);
-  }, [user]);
+  // Реквизиты (с фолбэком)
+  const CARD_DETAILS = useMemo(() => {
+    const primary = process.env.NEXT_PUBLIC_DEPOSIT_DETAILS;
+    const fallback = process.env.NEXT_PUBLIC_DEPOSITS_DETAILS;
+    return (primary && primary.trim()) || (fallback && fallback.trim()) || "Реквизиты не заданы";
+  }, []);
 
-  useEffect(()=>{
-    const tg = window.Telegram?.WebApp;
-    tg?.ready?.(); tg?.expand?.();
-    (async ()=>{
+  useEffect(() => {
+    // Telegram ready
+    // @ts-ignore
+    window.Telegram?.WebApp?.ready?.();
+    setInitData(getInitDataFromTMA());
+  }, []);
+
+  // Опционально тянем баланс, если у вас есть /api/balance
+  useEffect(() => {
+    let timer: any;
+    async function fetchBalance() {
+      if (!initData) return;
       try {
-        const r = await fetch("/api/auth", {
-          method:"POST",
-          headers:{"Content-Type":"application/json"},
-          body: JSON.stringify({ initData })
-        });
-        const data = await r.json();
-        if (data?.ok && data?.user) { setUser(data.user as TUser); }
-        else { setAuthError(data?.error || "auth_failed"); }
-      } catch { setAuthError("network_error"); }
-      finally { setAuthLoading(false); }
-    })();
+        const r = await fetch(`/api/balance?initData=${encodeURIComponent(initData)}`, { cache: "no-store" });
+        if (r.ok) {
+          const d = await r.json();
+          if (typeof d.balance === "number") setBalance(d.balance);
+        }
+      } catch {}
+    }
+    fetchBalance();
+    // обновлять раз в 20 сек
+    timer = setInterval(fetchBalance, 20000);
+    return () => clearInterval(timer);
   }, [initData]);
 
-  useEffect(()=>{
-    const edgeBp = Number(process.env.NEXT_PUBLIC_HOUSE_EDGE_BP ?? 150);
-    const edge = (10000 - edgeBp) / 10000;
-    const fair = 100 / Math.max(1, Math.min(95, chance));
-    setCoef(parseFloat((fair * edge).toFixed(4)));
-  }, [chance]);
-
-  async function place() {
-    if (!user) return;
-    setBusy(true);
+  async function createManualDeposit() {
+    if (!initData) return toast("Нет initData из Telegram.");
+    if (!amount || amount < 1) return toast("Введите сумму пополнения.");
     try {
-      const res = await fetch("/api/bet", {
-        method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({ initData, amount, chance, dir })
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setBalance(data.balance);
-        setLog(prev => [data.bet, ...prev].slice(0,30));
-      } else { alert(data.error || "Ошибка"); }
-    } catch { alert("Сеть/сервер недоступен"); }
-    finally { setBusy(false); }
-  }
-
-  // Deposit flow
-  function openDeposit() { setDepositOpen(true); setDepositAmt(500); setDepTab("card"); }
-  function closeDeposit() { setDepositOpen(false); }
-
-  // Карта (ручная модерация)
-  async function submitDepositCard() {
-    try {
+      setLoading(true);
       const r = await fetch("/api/deposit/create", {
-        method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({ initData, amount: depositAmt })
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ initData, amount }),
       });
-      const data = await r.json();
-      if (data.ok) {
-        alert("Заявка на пополнение отправлена. После подтверждения администратором средства поступят на баланс.");
-        setDepositOpen(false);
-      } else {
-        alert(data.error || "Не удалось создать заявку");
+      const d = await r.json();
+      if (!r.ok || d?.ok === false) {
+        return toast(d?.error || "Не удалось создать заявку на пополнение.");
       }
-    } catch {
-      alert("Сеть/сервер недоступен");
+      toast("Заявка отправлена администратору. После подтверждения баланс увеличится.");
+    } catch (e) {
+      toast("Ошибка сети при создании заявки.");
+    } finally {
+      setLoading(false);
     }
   }
 
-  // Касса (FKWallet / FreeKassa)
-  async function payInCashdesk() {
+  async function payViaFK() {
+    if (!initData) return toast("Нет initData из Telegram.");
+    if (!amount || amount < 1) return toast("Введите сумму пополнения.");
+
     try {
+      setLoading(true);
       const r = await fetch("/api/fkwallet/invoice", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ initData, amount: depositAmt }),
+        body: JSON.stringify({ initData, amount }),
       });
-      const d = await r.json();
-
-      if (!d?.ok || !d?.url) {
-        alert(d?.error || "Не удалось создать счёт");
-        return;
+      const d: InvoiceResp = await r.json();
+      if (!r.ok || d.ok === false) {
+        return toast((d as any)?.error || "Не удалось создать счёт в кассе.");
       }
 
-      const tg = (typeof window !== "undefined") ? window.Telegram?.WebApp : undefined;
-      if (tg?.openLink) {
-        tg.openLink(d.url, { try_browser: true });
-      } else {
-        window.open(d.url, "_blank", "noopener,noreferrer");
-      }
-
-      alert("Счёт открыт во внешнем браузере. После успешной оплаты вернитесь в бот — баланс пополнится автоматически.");
-      closeDeposit();
-    } catch {
-      alert("Сеть/сервер недоступен");
+      // Открываем платёж в новом окне/вкладке
+      window.open(d.url, "_blank", "noopener,noreferrer");
+      toast("Счёт открыт во внешнем браузере. После успешной оплаты баланс увеличится автоматически.");
+    } catch (e) {
+      toast("Сеть/сервер недоступен.");
+    } finally {
+      setLoading(false);
     }
   }
 
-  // Admin panel
-  async function refreshPending() {
-    const r = await fetch("/api/deposit/pending", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ initData })
-    });
-    const data = await r.json();
-    if (data.ok) setPending(data.pending as PendingDeposit[]);
-    else alert(data.error || "Ошибка загрузки");
-  }
-  async function actPending(id: string, action: 'approve'|'decline') {
-    const r = await fetch("/api/deposit/approve", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ initData, requestId: id, action })
-    });
-    const data = await r.json();
-    if (data.ok) {
-      alert(`Заявка ${action === 'approve' ? 'подтверждена' : 'отклонена'}`);
-      await refreshPending();
-    } else { alert(data.error || "Ошибка"); }
-  }
-
-  useEffect(()=>{
-    if (isAdmin) refreshPending();
-  }, [isAdmin]);
-
-  // DEMO feed
-  const demoFeedOn = String(process.env.NEXT_PUBLIC_DEMO_FEED ?? '') === '1';
-  const [demo, setDemo] = useState<any[]>([]);
-  useEffect(()=>{
-    if (!demoFeedOn) return;
-    const int = setInterval(()=>{
-      const id = Math.random().toString(36).slice(2,8);
-      const val = Math.floor(Math.random()*1_000_000);
-      const win = Math.random() < 0.48;
-      const amt = [50,100,200,500,1000,2500][Math.floor(Math.random()*6)];
-      const chance = [10,25,50,70,90][Math.floor(Math.random()*5)];
-      setDemo(prev => [{
-        id:`demo_${Date.now()}_${id}`,
-        outcome:{ value: val, win, coef: +(100/chance*0.985).toFixed(2), payout: win? Math.floor(amt * (100/chance*0.985)):0 }
-      }, ...prev].slice(0,50));
-    }, 2000);
-    return ()=>clearInterval(int);
-  }, [demoFeedOn]);
-
-  // Gates
-  if (authLoading) {
-    return <main className="center"><div className="card"><div className="h2">Подключение к Telegram…</div></div></main>;
-  }
-  if (!user) {
-    return <main className="center"><div className="card">
-      <div className="h2">Откройте через Telegram</div>
-      <div className="sub">Это мини-приложение запускается из бота {process.env.NEXT_PUBLIC_BOT_NAME ?? ""}.</div>
-      {authError && <div className="warn">Ошибка: {authError}</div>}
-    </div></main>;
-  }
-
   return (
-    <div className="container fade-in">
-      <header className="row header">
-        <div>
-          <div className="h1">GVSuti</div>
-          <div className="sub">Проведённая честность • WebApp {process.env.NEXT_PUBLIC_BOT_NAME ?? ""}</div>
-        </div>
-        <div className="row gap8">
-          <span className="badge">UID: {user?.id}</span>
-          <span className="badge">Баланс: <b className="k">{balance} ₽</b></span>
-          <button className="btn-outline" onClick={openDeposit}>Пополнить</button>
-        </div>
-      </header>
+    <main className="min-h-screen bg-neutral-900 text-neutral-100">
+      <div className="mx-auto max-w-3xl p-4 space-y-6">
+        <header className="flex items-center justify-between">
+          <h1 className="text-xl font-semibold">GVSuti</h1>
 
-      {/* --- СТАВКИ --- */}
-      <main className="grid">
-        <section className="card lift">
-          <div className="label">Сумма ставки (1–10 000 ₽)</div>
-          <input className="input" type="number" min={1} max={10000} value={amount}
-            onChange={(e)=>setAmount(Math.max(1, Math.min(10000, parseInt(e.target.value||'0',10))))} />
-          <div className="row gap8 wrap">
-            {[100,500,1000].map(v=>(
-              <button key={v} className="chip" onClick={()=>setAmount(v)}>{v} ₽</button>
-            ))}
+          <div className="text-sm opacity-80">
+            Баланс:&nbsp;
+            <b>{balance === null ? "—" : `${balance} ₽`}</b>
           </div>
+        </header>
 
-          <div className="row between">
-            <div>
-              <div className="label">Шанс (1–95%)</div>
-              <input className="slider" type="range" min={1} max={95} value={chance} onChange={(e)=>setChance(parseInt(e.target.value,10))}/>
+        <div className="flex gap-3">
+          <button
+            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium hover:bg-emerald-500"
+            onClick={() => setDepositOpen(true)}
+          >
+            Пополнить
+          </button>
+        </div>
+
+        {/* --- Модалка пополнения --- */}
+        {depositOpen && (
+          <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4">
+            <div className="w-full max-w-xl rounded-2xl bg-neutral-800 p-4 shadow-xl">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Пополнение баланса</h2>
+                <button
+                  className="rounded-xl bg-neutral-700 px-3 py-1 text-sm hover:bg-neutral-600"
+                  onClick={() => setDepositOpen(false)}
+                >
+                  Закрыть
+                </button>
+              </div>
+
+              {/* Tabs */}
+              <div className="mb-3 flex gap-2">
+                <button
+                  onClick={() => setDepositTab("card")}
+                  className={`rounded-lg px-3 py-1 text-sm ${
+                    depositTab === "card" ? "bg-neutral-700" : "bg-neutral-700/40 hover:bg-neutral-700/60"
+                  }`}
+                >
+                  Банковская карта
+                </button>
+                <button
+                  onClick={() => setDepositTab("fk")}
+                  className={`rounded-lg px-3 py-1 text-sm ${
+                    depositTab === "fk" ? "bg-neutral-700" : "bg-neutral-700/40 hover:bg-neutral-700/60"
+                  }`}
+                >
+                  Касса (FKWallet)
+                </button>
+              </div>
+
+              {/* Сумма */}
+              <div className="mb-3">
+                <div className="mb-1 text-xs opacity-70">Сумма</div>
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={amount}
+                  onChange={(e) => setAmount(Math.max(1, Math.floor(Number(e.target.value || "0"))))}
+                  className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-500"
+                  placeholder="Например, 500"
+                />
+              </div>
+
+              {/* Контент вкладок */}
+              {depositTab === "fk" ? (
+                <div className="space-y-3">
+                  <p className="text-xs leading-5 text-neutral-300">
+                    Оплата через кассу (FKWallet / FreeKassa).
+                    Нажмите «Оплатить в кассе» — откроется страница оплаты во внешнем браузере.
+                    После успешной оплаты баланс увеличится автоматически.
+                  </p>
+
+                  <div className="flex justify-between gap-2">
+                    <button
+                      className="rounded-lg bg-neutral-700 px-3 py-2 text-sm hover:bg-neutral-600"
+                      onClick={() => setDepositOpen(false)}
+                    >
+                      Отмена
+                    </button>
+                    <button
+                      className="rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium hover:bg-sky-500 disabled:opacity-60"
+                      onClick={payViaFK}
+                      disabled={loading}
+                    >
+                      Оплатить в кассе
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div>
+                    <div className="mb-1 text-xs opacity-70">Реквизиты для перевода</div>
+                    <div className="rounded-lg border border-neutral-700 bg-neutral-900 p-3 text-sm">
+                      {CARD_DETAILS}
+                    </div>
+                    <div className="mt-2 text-[11px] opacity-70">
+                      После перевода нажмите «Я оплатил» — заявка отправится администратору. После подтверждения баланс
+                      увеличится.
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between gap-2">
+                    <button
+                      className="rounded-lg bg-neutral-700 px-3 py-2 text-sm hover:bg-neutral-600"
+                      onClick={() => setDepositOpen(false)}
+                    >
+                      Отмена
+                    </button>
+                    <button
+                      className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium hover:bg-emerald-500 disabled:opacity-60"
+                      onClick={createManualDeposit}
+                      disabled={loading}
+                    >
+                      Я оплатил
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
-            <div className="badge">{chance}%</div>
           </div>
-
-          <div className="row gap8">
-            <button className="btn-outline" onClick={()=>setDir('under')} disabled={dir==='under'}>Меньше</button>
-            <button className="btn-outline" onClick={()=>setDir('over')} disabled={dir==='over'}>Больше</button>
-          </div>
-
-          <div className="row between">
-            <div className="sub">Коэффициент: <b className="k">×{coef}</b></div>
-            <div className="sub">Потенц. выплата: <b className="k">{Math.floor(amount * coef)} ₽</b></div>
-          </div>
-
-          <div><button className="btn pulse" onClick={place} disabled={busy}>Сделать ставку</button></div>
-        </section>
-
-        {/* --- Последние раунды --- */}
-        <section className="card">
-          <div className="row between">
-            <b>Последние раунды</b>
-            <a className="sub" href="#" onClick={(e)=>{e.preventDefault(); alert('Опубликуйте старые serverSeed для проверки.')}}>Проверка честности</a>
-          </div>
-          <ul className="list">
-            {log.slice(0,10).map((b:any,i)=>(
-              <li key={i}>
-                <span className="k">{b.outcome.value.toString().padStart(6,'0')}</span> — {b.dir==='under'?'меньше':'больше'} при {b.chance}% → {b.outcome.win? 'победа':'проигрыш'}; выплата <b className="k">{b.outcome.payout}</b>
-                <div className="sub">coef ×{b.outcome.coef} • commit {b.outcome.proof.serverSeedHash.slice(0,10)}… • nonce {b.nonce}</div>
-              </li>
-            ))}
-          </ul>
-        </section>
-
-        {/* --- Админка --- */}
-        {isAdmin && (
-          <section className="card">
-            <div className="row between"><b>Админ • Пополнения</b><button className="btn-outline" onClick={refreshPending}>Обновить</button></div>
-            {pending.length===0 ? <div className="sub">Ожидающих заявок нет.</div> : (
-              <ul className="list">
-                {pending.map(p=>(
-                  <li key={p.id} className="row between wrap">
-                    <span>#{p.id.slice(-6)} • user {p.userId} • {p.amount} ₽ • {new Date(p.createdAt).toLocaleString()}</span>
-                    <span className="row gap8">
-                      <button className="chip ok" onClick={()=>actPending(p.id,'approve')}>Подтвердить</button>
-                      <button className="chip warn" onClick={()=>actPending(p.id,'decline')}>Отклонить</button>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
         )}
-      </main>
-
-      {/* --- Лента активности --- */}
-      {demoFeedOn && (
-        <section className="demo">
-          <div className="demo-title">Лента активности</div>
-          <div className="ticker">
-            <div>
-              {demo.concat(demo).slice(0,40).map((b:any,i:number)=>(
-                <span key={i} style={{marginRight:24}}>
-                  #{b.id.slice(-6)} • <span className="k">{b.outcome.value.toString().padStart(6,'0')}</span> → {b.outcome.win? '✔':'✖'}
-                </span>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* --- Модал пополнения --- */}
-      {depositOpen && (
-        <div className="overlay" onClick={closeDeposit}>
-          <div className="modal" onClick={(e)=>e.stopPropagation()}>
-
-            <div className="h2">Пополнение баланса</div>
-
-            {/* Табы */}
-            <div className="row gap8" style={{marginBottom:12}}>
-              <button className={depTab==='card' ? 'chip ok' : 'chip'} onClick={()=>setDepTab('card')}>
-                Банковская карта
-              </button>
-              <button className={depTab==='cashdesk' ? 'chip ok' : 'chip'} onClick={()=>setDepTab('cashdesk')}>
-                Касса (FKWallet)
-              </button>
-            </div>
-
-            <div className="label">Сумма</div>
-            <input className="input" type="number" min={1} value={depositAmt} onChange={(e)=>setDepositAmt(Math.max(1, parseInt(e.target.value||'0',10)))} />
-
-            {depTab === 'card' ? (
-              <>
-                <div className="info">
-                  Реквизиты для перевода:<br/>
-                  <b>{process.env.NEXT_PUBLIC_DEPOSIT_DETAILS ?? 'Укажите NEXT_PUBLIC_DEPOSIT_DETAILS'}</b>
-                  <div className="sub">После оплаты нажмите «Я оплатил» — заявка уйдёт администратору на подтверждение.</div>
-                </div>
-                <div className="row gap8">
-                  <button className="btn-outline" onClick={closeDeposit}>Отмена</button>
-                  <button className="btn" onClick={submitDepositCard}>Я оплатил</button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="info">
-                  Оплата через кассу (FKWallet / FreeKassa). Нажмите «Оплатить в кассе» — откроется страница оплаты во внешнем браузере. После успешной оплаты баланс увеличится автоматически.
-                </div>
-                <div className="row gap8">
-                  <button className="btn-outline" onClick={closeDeposit}>Отмена</button>
-                  <button className="btn" onClick={payInCashdesk}>Оплатить в кассе</button>
-                </div>
-              </>
-            )}
-
-          </div>
-        </div>
-      )}
-    </div>
+      </div>
+    </main>
   );
 }
