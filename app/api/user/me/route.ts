@@ -2,25 +2,43 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyInitData } from "@/lib/sign";
 import { getBalance } from "@/lib/store";
 
+type TgUser = { id: number; first_name?: string; username?: string };
+
+function extractUser(x: unknown): TgUser | null {
+  if (!x || typeof x !== "object") return null;
+  // Вариант 1: { ok:true|false, user?:... }
+  if ("ok" in (x as any)) {
+    const obj = x as { ok: boolean; user?: TgUser };
+    return obj.ok && obj.user ? obj.user : null;
+  }
+  // Вариант 2: совместимость — вдруг было { user: ... } без ok
+  if ("user" in (x as any)) {
+    const obj = x as { user?: TgUser };
+    return obj.user ?? null;
+  }
+  return null;
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const { initData } = await req.json();
+    const { initData } = (await req.json()) as { initData?: string };
     const botToken = process.env.BOT_TOKEN!;
-    const parsed = verifyInitData(initData, botToken); // { user: {...} } либо null
+    if (!botToken) {
+      return NextResponse.json({ ok: false, error: "BOT_TOKEN missing" }, { status: 500 });
+    }
+    if (!initData) {
+      return NextResponse.json({ ok: false, error: "no initData" }, { status: 401 });
+    }
 
-    if (!parsed?.user?.id) {
+    const parsed = verifyInitData(initData, botToken);
+    const user = extractUser(parsed);
+    if (!user?.id) {
       return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
     }
 
-    const userId = Number(parsed.user.id);
-    const balance = getBalance(userId) ?? 0;
-
-    return NextResponse.json({
-      ok: true,
-      user: { id: userId, first_name: parsed.user.first_name, username: parsed.user.username },
-      balance,
-    });
+    const balance = await getBalance(user.id);
+    return NextResponse.json({ ok: true, user, balance });
   } catch {
-    return NextResponse.json({ ok: false, error: "bad_params" }, { status: 400 });
+    return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
   }
 }
