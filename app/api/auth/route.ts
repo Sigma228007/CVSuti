@@ -1,23 +1,36 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { verifyInitData } from '@/lib/sign';
-import { getBalance, upsertUser } from '@/lib/store';
+import { NextRequest, NextResponse } from "next/server";
+import { verifyInitData } from "@/lib/sign";
+import { getBalance, upsertUser } from "@/lib/store";
+
+type Body = { initData?: string };
 
 export async function POST(req: NextRequest) {
   try {
-    const { initData } = await req.json();
-    const botToken = process.env.BOT_TOKEN!;
-    const parsed = verifyInitData(initData, botToken);
-    if (!parsed || !parsed.user?.id) {
-      return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+    const { initData }: Body = await req.json();
+
+    const botToken = process.env.BOT_TOKEN || "";
+    if (!initData || !botToken) {
+      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
     }
 
-    const uid = Number(parsed.user.id);
-    await upsertUser(uid, { user: parsed.user });
+    const parsed = verifyInitData(initData, botToken);
+    if (!parsed.ok) {
+      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+    }
+
+    const user = parsed.user; // здесь уже безопасно
+    const uid = user.id;
+
+    // опционально обновим инфо о пользователе
+    await upsertUser(uid, {
+      first_name: user.first_name ?? null,
+      username: user.username ?? null,
+      lastSeenAt: Date.now(),
+    });
 
     const balance = await getBalance(uid);
-    return NextResponse.json({ ok: true, user: parsed.user, balance });
+    return NextResponse.json({ ok: true, userId: uid, balance });
   } catch (e) {
-    console.error(e);
-    return NextResponse.json({ ok: false, error: 'server_error' }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
   }
 }
