@@ -1,32 +1,12 @@
-import { createClient } from 'redis';
+import { createClient, type RedisClientType } from "redis";
 
 const url = process.env.REDIS_URL!;
-let client: ReturnType<typeof createClient> | null = null;
-let connecting: Promise<void> | null = null;
+let client: RedisClientType | null = null;
 
-async function connect() {
-  // уже открыт
-  if (client?.isOpen) return client;
-
-  // уже в процессе коннекта — дождёмся
-  if (connecting) {
-    await connecting;
-    return client!;
-  }
-
-  const c = createClient({ url });
-  c.on('error', (e) => console.error('Redis error:', e));
-
-  // один общий промис на коннект
-  connecting = c.connect()
-    .then(() => { client = c; })
-    .finally(() => { connecting = null; });
-
-  await connecting;
-  return client!;
-}
-
-// Экспортируем единый getter клиента
-export async function redis() {
-  return connect();
+export async function redis(): Promise<RedisClientType> {
+  if (client && client.isOpen) return client;
+  client = createClient({ url });
+  client.on("error", (e) => console.error("Redis error:", e));
+  await client.connect();
+  return client;
 }
