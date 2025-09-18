@@ -1,15 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { roll, publicCommit } from "@/lib/fair";
-import { HOUSE_EDGE_BP, MIN_BET, MAX_BET, MIN_CHANCE, MAX_CHANCE } from "@/lib/config";
-import { bets, getBalance, setBalance, getNonce, type BetRecord } from "@/lib/store";
+import {
+  HOUSE_EDGE_BP,
+  MIN_BET,
+  MAX_BET,
+  MIN_CHANCE,
+  MAX_CHANCE,
+} from "@/lib/config";
+import {
+  bets,
+  getBalance,
+  setBalance,
+  getNonce,
+  type BetRecord,
+} from "@/lib/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type TgUser = { id: number; first_name?: string; username?: string };
 
-function verifyInitData(initData: string, botToken: string): { ok: boolean; user?: TgUser } {
+function verifyInitData(
+  initData: string,
+  botToken: string
+): { ok: boolean; user?: TgUser } {
   try {
     const params = new URLSearchParams(initData);
     const hash = params.get("hash") || "";
@@ -20,8 +35,14 @@ function verifyInitData(initData: string, botToken: string): { ok: boolean; user
       .map(([k, v]) => `${k}=${v}`)
       .join("\n");
 
-    const secretKey = crypto.createHmac("sha256", "WebAppData").update(botToken).digest();
-    const myHash = crypto.createHmac("sha256", secretKey).update(dataCheckString).digest("hex");
+    const secretKey = crypto
+      .createHmac("sha256", "WebAppData")
+      .update(botToken)
+      .digest();
+    const myHash = crypto
+      .createHmac("sha256", secretKey)
+      .update(dataCheckString)
+      .digest("hex");
 
     if (myHash !== hash) return { ok: false };
     const userStr = params.get("user");
@@ -48,44 +69,84 @@ export async function POST(req: NextRequest) {
   };
 
   if (!process.env.BOT_TOKEN) {
-    return NextResponse.json({ ok: false, error: "BOT_TOKEN missing" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: "BOT_TOKEN missing" },
+      { status: 500 }
+    );
   }
   if (!initData) {
-    return NextResponse.json({ ok: false, error: "no initData" }, { status: 401 });
+    return NextResponse.json(
+      { ok: false, error: "no initData" },
+      { status: 401 }
+    );
   }
 
   const v = verifyInitData(initData, process.env.BOT_TOKEN);
   if (!v.ok || !v.user) {
-    return NextResponse.json({ ok: false, error: "bad initData" }, { status: 401 });
+    return NextResponse.json(
+      { ok: false, error: "bad initData" },
+      { status: 401 }
+    );
   }
   const userId = v.user.id;
 
-  if (typeof amount !== "number" || amount < MIN_BET || amount > MAX_BET)
-    return NextResponse.json({ ok: false, error: "bad amount" }, { status: 400 });
-  if (typeof chance !== "number" || chance < MIN_CHANCE || chance > MAX_CHANCE)
-    return NextResponse.json({ ok: false, error: "bad chance" }, { status: 400 });
-  if (dir !== "over" && dir !== "under")
-    return NextResponse.json({ ok: false, error: "bad dir" }, { status: 400 });
+  // валидации
+  if (typeof amount !== "number" || amount < MIN_BET || amount > MAX_BET) {
+    return NextResponse.json(
+      { ok: false, error: "bad amount" },
+      { status: 400 }
+    );
+  }
+  if (
+    typeof chance !== "number" ||
+    chance < MIN_CHANCE ||
+    chance > MAX_CHANCE
+  ) {
+    return NextResponse.json(
+      { ok: false, error: "bad chance" },
+      { status: 400 }
+    );
+  }
+  if (dir !== "over" && dir !== "under") {
+    return NextResponse.json(
+      { ok: false, error: "bad dir" },
+      { status: 400 }
+    );
+  }
 
-  const balance = getBalance(userId);
-  if (amount > balance) return NextResponse.json({ ok: false, error: "insufficient" }, { status: 400 });
+  const balance = await getBalance(userId);
+  if (amount > balance) {
+    return NextResponse.json(
+      { ok: false, error: "insufficient" },
+      { status: 400 }
+    );
+  }
 
   const serverSeed = process.env.SERVER_SEED || "";
-  if (!serverSeed) return NextResponse.json({ ok: false, error: "SERVER_SEED missing" }, { status: 500 });
+  if (!serverSeed) {
+    return NextResponse.json(
+      { ok: false, error: "SERVER_SEED missing" },
+      { status: 500 }
+    );
+  }
 
   const clientSeed = String(userId);
-  const nonce = getNonce(userId);
+  const nonce = await getNonce(); // важно: без аргументов
   const { value, hex } = roll(serverSeed, clientSeed, nonce);
 
   // 1% = 10_000 из 1_000_000
   const threshold = Math.floor(chance * 10_000);
-  const win = dir === "under" ? value < threshold : value >= 1_000_000 - threshold;
+  const win =
+    dir === "under"
+      ? value < threshold
+      : value >= 1_000_000 - threshold;
 
   const coef = coefForChance(chance);
   const payout = win ? Math.floor(amount * coef) : 0;
   const after = balance - amount + payout;
 
-  setBalance(userId, after);
+  // ВАЖНО: дожидаемся записи баланса
+  await setBalance(userId, after);
 
   const rec: BetRecord = {
     id: `${Date.now()}_${userId}_${nonce}`,
@@ -93,6 +154,8 @@ export async function POST(req: NextRequest) {
     amount,
     chance,
     dir,
+    // если в типе BetRecord нет placedAt — либо добавь его в тип,
+    // либо замени строку ниже на существующее поле, например createdAt
     placedAt: Date.now(),
     nonce,
     outcome: {

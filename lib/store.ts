@@ -60,7 +60,7 @@ export type BetRecord = {
   chance: number;
   nonce: number;
   outcome: any;
-  ts: number;
+  placedAt: number
 };
 
 // Временный массив в памяти на 100 последних записей.
