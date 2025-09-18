@@ -1,147 +1,136 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 
-type ApiOk<T> = { ok: true } & T;
-type ApiErr = { ok: false; error: string };
-
-// Берём initData из Telegram WebApp или из URL-хэша (tgWebAppData=...)
-function readInitDataFromWindow(): string {
-  if (typeof window === 'undefined') return '';
-
-  const anyWin = window as any;
-
-  // 1) Основной путь
-  const fromSDK = anyWin?.Telegram?.WebApp?.initData;
-  if (typeof fromSDK === 'string' && fromSDK.length > 0) return fromSDK;
-
-  // 2) Иногда web.telegram.org кладёт данные в location.hash как "tgWebAppData=<initData>"
-  const hash = window.location.hash || '';
-  if (hash.startsWith('#')) {
-    const qs = new URLSearchParams(hash.slice(1));
-    const fromHash = qs.get('tgWebAppData');
-    if (typeof fromHash === 'string' && fromHash.length > 0) {
-      try {
-        // Иногда приходит URL-encoded ещё раз — декодируем
-        return decodeURIComponent(fromHash);
-      } catch {
-        return fromHash;
-      }
+function openExternal(url: string) {
+  try {
+    const tg = (window as any)?.Telegram?.WebApp;
+    if (tg && typeof tg.openLink === 'function') {
+      tg.openLink(url, { try_instant_view: false });
+      return;
     }
-  }
-
-  return '';
+  } catch {}
+  window.open(url, '_blank', 'noopener,noreferrer');
 }
 
 export default function Page() {
   const [amount, setAmount] = useState<number>(500);
   const [loading, setLoading] = useState(false);
-  const [balance, setBalance] = useState<number | null>(null);
 
-  // Первичное чтение initData
-  const [initData, setInitData] = useState<string>(() => readInitDataFromWindow());
+  // читаем initData (если запущено как Telegram WebApp)
+  const initData = useMemo(() => {
+    try {
+      const tg = (window as any)?.Telegram?.WebApp;
+      if (tg?.initData) return tg.initData as string;
+    } catch {}
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      return (
+        urlParams.get('initData') ||
+        urlParams.get('initdata') ||
+        urlParams.get('init_data') ||
+        undefined
+      );
+    } catch {}
+    return undefined;
+  }, []);
 
-  // На всякий случай попробуем дочитать initData после ready()
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const t = (window as any)?.Telegram?.WebApp;
-    try { t?.ready?.(); } catch {}
-    // если первый проход не поймал — ещё раз попробуем через тик
-    if (!initData) {
-      const id = setTimeout(() => setInitData(readInitDataFromWindow()), 0);
-      return () => clearTimeout(id);
-    }
-  }, [initData]);
-
-  const refreshBalance = useCallback(async () => {
+  async function handlePay() {
     setLoading(true);
     try {
-      const url = `/api/balance?initData=${encodeURIComponent(initData)}`;
-      const r = await fetch(url, { cache: 'no-store' });
-      const d = (await r.json()) as ApiOk<{ balance: number }> | ApiErr;
-      if ('ok' in d && d.ok) setBalance(d.balance);
-      else alert(`401: открой WebApp из Telegram (нет initData)\n${(d as ApiErr).error ?? ''}`);
-    } catch (e) {
-      console.error(e);
-      alert('Не удалось получить баланс');
-    } finally {
-      setLoading(false);
-    }
-  }, [initData]);
-
-  const payInFK = useCallback(async () => {
-    setLoading(true);
-    try {
-      const r = await fetch(`/api/fkwallet/invoice?initData=${encodeURIComponent(initData)}`, {
+      const res = await fetch('/api/fkwallet/invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount }),
+        body: JSON.stringify({ amount, initData }),
       });
-      const d = (await r.json()) as ApiOk<{ url: string }> | ApiErr;
-      if ('ok' in d && d.ok) {
-        window.open(d.url, '_blank', 'noopener,noreferrer'); // открываем FreeKassa/ FKWallet
-      } else {
-        alert((d as ApiErr).error || 'Ошибка при создании счёта');
+      const data = await res.json();
+      if (!res.ok || !data?.ok) {
+        const msg = data?.error || `Server error (${res.status})`;
+        alert('Ошибка: ' + msg);
+        return;
       }
-    } catch (e) {
-      console.error(e);
-      alert('Сеть недоступна или сервер не отвечает');
+      openExternal(data.url);
+    } catch (e: any) {
+      alert('Ошибка сети: ' + (e?.message || e));
     } finally {
       setLoading(false);
     }
-  }, [amount, initData]);
+  }
 
   return (
-    <div className="min-h-screen bg-[#0c1219] text-white flex justify-center">
-      <div className="w-full max-w-xl px-5 py-8">
-        <div className="flex items-center justify-between mb-5">
-          <h1 className="text-2xl font-semibold">GVSuti</h1>
-          <button
-            className="text-sm px-3 py-1 rounded bg-[#0f2842]"
-            onClick={refreshBalance}
-            disabled={loading}
+    <main style={{ padding: 24, fontFamily: 'Inter, Arial, sans-serif', color: '#e6eef3' }}>
+      <h1 style={{ color: '#fff', marginBottom: 16 }}>GVsuti — Пополнение</h1>
+
+      <div
+        style={{
+          marginTop: 8,
+          background: '#0f1720',
+          padding: 20,
+          borderRadius: 12,
+          maxWidth: 900,
+          boxShadow: '0 6px 24px rgba(0,0,0,0.25)',
+        }}
+      >
+        <div style={{ marginBottom: 12 }}>
+          <span
+            style={{
+              fontSize: 14,
+              background: '#111827',
+              padding: '6px 10px',
+              borderRadius: 8,
+              color: '#93c5fd',
+            }}
           >
-            Баланс: {balance ?? 0} ₽ <span className="opacity-70 ml-1">Обновить</span>
-          </button>
+            Баланс: 0 ₽ <span style={{ opacity: 0.6, marginLeft: 8 }}>(демо-заглушка)</span>
+          </span>
         </div>
 
-        <div className="rounded-xl border border-[#1b2a3a] bg-[#0f1621] p-4">
-          <div className="text-sm mb-2">Сумма</div>
-          <input
-            type="number"
-            min={10}
-            value={amount}
-            onChange={(e) => setAmount(Math.max(1, Number(e.target.value || 0)))}
-            className="w-full rounded-md bg-[#0b1118] border border-[#1b2a3a] px-3 py-2 outline-none"
-          />
+        <label style={{ display: 'block', marginBottom: 8, color: '#cbd5e1' }}>Сумма</label>
+        <input
+          type="number"
+          min={1}
+          value={amount}
+          onChange={(e) => setAmount(Number(e.target.value))}
+          style={{
+            padding: 10,
+            width: 220,
+            borderRadius: 10,
+            border: '1px solid #1f2937',
+            background: '#0b1220',
+            color: '#e6eef3',
+            outline: 'none',
+            marginBottom: 14,
+          }}
+        />
 
-          <p className="text-xs mt-4 text-[#a7b3c2]">
-            Оплата через кассу (FKWallet / FreeKassa). Нажмите «Оплатить в кассе» — откроется
-            страница оплаты во внешнем браузере. После успешной оплаты баланс обновится автоматически.
-          </p>
+        <p style={{ marginTop: 4, marginBottom: 14, color: '#9aa9bd', lineHeight: 1.45 }}>
+          Оплата через кассу (FKWallet / FreeKassa). Нажмите «Оплатить в кассе» — откроется внешняя
+          страница оплаты. После успешной оплаты баланс обновится автоматически.
+        </p>
 
-          <button
-            onClick={payInFK}
-            disabled={loading || !initData}
-            className="mt-4 w-full rounded-md bg-[#16a34a] hover:bg-[#129243] transition-colors py-2 font-semibold disabled:opacity-60"
-            title={!initData ? 'initData не найден — открой мини-приложение из Telegram' : undefined}
-          >
-            Оплатить в кассе
-          </button>
+        <button
+          onClick={handlePay}
+          disabled={loading || !amount || amount <= 0}
+          style={{
+            padding: '12px 18px',
+            background: loading ? '#128a71' : '#19b894',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 10,
+            cursor: loading ? 'default' : 'pointer',
+            fontWeight: 600,
+          }}
+        >
+          {loading ? 'Подготовка…' : 'Оплатить в кассе'}
+        </button>
 
-          {!initData && (
-            <div className="mt-4 text-xs text-amber-300">
-              401: открой WebApp из Telegram (initData не найден).
-            </div>
-          )}
-        </div>
-
-        <div className="mt-6 text-xs text-[#93a3b5] border border-[#1b2a3a] rounded-xl p-3 bg-[#0f1621]">
-          <span className="opacity-70">*Подсказка:</span> Если тестируешь в обычном браузере,
-          initData отсутствует и сервер ответит 401. Открой приложение через Telegram WebApp (кнопка
-          в боте) — тогда ссылка будет содержать <code>tgWebAppData</code> или SDK заполнит initData.
+        <div style={{ marginTop: 16, color: '#9aa9bd' }}>
+          <small>
+            Подсказка: если тестируешь в обычном браузере, <code>initData</code> может отсутствовать — сервер вернёт 401 на других эндпойнтах, но
+            создание счёта для Freekassa всё равно отработает. Для полного флоу открой WebApp в Telegram.
+          </small>
         </div>
       </div>
-    </div>
+    </main>
   );
 }
