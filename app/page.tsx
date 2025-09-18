@@ -1,23 +1,57 @@
 'use client';
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
 type ApiOk<T> = { ok: true } & T;
 type ApiErr = { ok: false; error: string };
 
-function getInitData(): string {
-  // Важно: не трогаем window на сервере
+// Берём initData из Telegram WebApp или из URL-хэша (tgWebAppData=...)
+function readInitDataFromWindow(): string {
   if (typeof window === 'undefined') return '';
+
   const anyWin = window as any;
-  const td = anyWin?.Telegram?.WebApp?.initData;
-  return typeof td === 'string' ? td : '';
+
+  // 1) Основной путь
+  const fromSDK = anyWin?.Telegram?.WebApp?.initData;
+  if (typeof fromSDK === 'string' && fromSDK.length > 0) return fromSDK;
+
+  // 2) Иногда web.telegram.org кладёт данные в location.hash как "tgWebAppData=<initData>"
+  const hash = window.location.hash || '';
+  if (hash.startsWith('#')) {
+    const qs = new URLSearchParams(hash.slice(1));
+    const fromHash = qs.get('tgWebAppData');
+    if (typeof fromHash === 'string' && fromHash.length > 0) {
+      try {
+        // Иногда приходит URL-encoded ещё раз — декодируем
+        return decodeURIComponent(fromHash);
+      } catch {
+        return fromHash;
+      }
+    }
+  }
+
+  return '';
 }
 
 export default function Page() {
   const [amount, setAmount] = useState<number>(500);
   const [loading, setLoading] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
-  const initData = useMemo(() => getInitData(), []);
+
+  // Первичное чтение initData
+  const [initData, setInitData] = useState<string>(() => readInitDataFromWindow());
+
+  // На всякий случай попробуем дочитать initData после ready()
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const t = (window as any)?.Telegram?.WebApp;
+    try { t?.ready?.(); } catch {}
+    // если первый проход не поймал — ещё раз попробуем через тик
+    if (!initData) {
+      const id = setTimeout(() => setInitData(readInitDataFromWindow()), 0);
+      return () => clearTimeout(id);
+    }
+  }, [initData]);
 
   const refreshBalance = useCallback(async () => {
     setLoading(true);
@@ -45,9 +79,9 @@ export default function Page() {
       });
       const d = (await r.json()) as ApiOk<{ url: string }> | ApiErr;
       if ('ok' in d && d.ok) {
-        window.open(d.url, '_blank', 'noopener,noreferrer'); // открыть FreeKassa во внешнем браузере
+        window.open(d.url, '_blank', 'noopener,noreferrer'); // открываем FreeKassa/ FKWallet
       } else {
-        alert((d as ApiErr).error || 'Ошибка при создании счета');
+        alert((d as ApiErr).error || 'Ошибка при создании счёта');
       }
     } catch (e) {
       console.error(e);
@@ -88,22 +122,24 @@ export default function Page() {
 
           <button
             onClick={payInFK}
-            disabled={loading}
+            disabled={loading || !initData}
             className="mt-4 w-full rounded-md bg-[#16a34a] hover:bg-[#129243] transition-colors py-2 font-semibold disabled:opacity-60"
+            title={!initData ? 'initData не найден — открой мини-приложение из Telegram' : undefined}
           >
             Оплатить в кассе
           </button>
 
           {!initData && (
             <div className="mt-4 text-xs text-amber-300">
-              401: открой WebApp из Telegram (нет initData).
+              401: открой WebApp из Telegram (initData не найден).
             </div>
           )}
         </div>
 
         <div className="mt-6 text-xs text-[#93a3b5] border border-[#1b2a3a] rounded-xl p-3 bg-[#0f1621]">
           <span className="opacity-70">*Подсказка:</span> Если тестируешь в обычном браузере,
-          initData отсутствует и сервер ответит 401. Открой приложение через Telegram WebApp.
+          initData отсутствует и сервер ответит 401. Открой приложение через Telegram WebApp (кнопка
+          в боте) — тогда ссылка будет содержать <code>tgWebAppData</code> или SDK заполнит initData.
         </div>
       </div>
     </div>
