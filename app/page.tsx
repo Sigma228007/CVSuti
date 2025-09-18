@@ -6,8 +6,8 @@ type ApiOk<T> = { ok: true } & T;
 type ApiErr = { ok: false; error: string };
 
 function getInitData(): string {
-  // initData доступен ТОЛЬКО внутри Telegram WebApp
-  // Если ты открываешь в обычном браузере — его не будет.
+  // Важно: не трогаем window на сервере
+  if (typeof window === 'undefined') return '';
   const anyWin = window as any;
   const td = anyWin?.Telegram?.WebApp?.initData;
   return typeof td === 'string' ? td : '';
@@ -45,8 +45,7 @@ export default function Page() {
       });
       const d = (await r.json()) as ApiOk<{ url: string }> | ApiErr;
       if ('ok' in d && d.ok) {
-        // Откроем во внешнем браузере
-        window.open(d.url, '_blank', 'noopener,noreferrer');
+        window.open(d.url, '_blank', 'noopener,noreferrer'); // открыть FreeKassa во внешнем браузере
       } else {
         alert((d as ApiErr).error || 'Ошибка при создании счета');
       }
@@ -84,8 +83,7 @@ export default function Page() {
 
           <p className="text-xs mt-4 text-[#a7b3c2]">
             Оплата через кассу (FKWallet / FreeKassa). Нажмите «Оплатить в кассе» — откроется
-            страница оплаты во внешнем браузере. После успешной оплаты баланс обновится
-            автоматически.
+            страница оплаты во внешнем браузере. После успешной оплаты баланс обновится автоматически.
           </p>
 
           <button
@@ -104,9 +102,8 @@ export default function Page() {
         </div>
 
         <div className="mt-6 text-xs text-[#93a3b5] border border-[#1b2a3a] rounded-xl p-3 bg-[#0f1621]">
-          <span className="opacity-70">*Подсказка:</span> Если вы тестируете в обычном браузере,
-          параметр initData отсутствует и сервер ответит 401. Откройте приложение через Telegram
-          WebApp.
+          <span className="opacity-70">*Подсказка:</span> Если тестируешь в обычном браузере,
+          initData отсутствует и сервер ответит 401. Открой приложение через Telegram WebApp.
         </div>
       </div>
     </div>
