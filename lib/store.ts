@@ -39,9 +39,10 @@ export async function upsertUser(uid: number, data: Record<string, any>) {
 
 const nonceKey = (uid: number) => `u:${uid}:nonce`;
 
-export async function getNonce(uid: number): Promise<number> {
+export async function getNonce(uid?: number): Promise<number> {
   const c = await redis();
-  const n = await c.incr(nonceKey(uid));
+  const key = uid ? `u:${uid}:nonce` : 'nonce';
+  const n = await c.incr(key);
   return Number(n);
 }
 
