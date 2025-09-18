@@ -1,61 +1,42 @@
 import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
-import { redis } from "@/lib/redis";
-import { addBalance } from "@/lib/store"; // у тебя есть addBalance(uid, delta)
+import { createHash } from "crypto";
+import { addBalance, markProcessedOnce } from "@/lib/store";
 
-export async function POST(req: NextRequest) {
-  try {
-    // FK шлет либо form-urlencoded, либо query
-    const url = new URL(req.url);
-    const q = url.searchParams;
-
-    // универсально достанем поля
-    // m - merchant id, oa - amount, o - order id, s - sign
-    const merchant = q.get("m") || "";
-    const amountStr = q.get("oa") || "";
-    const orderId = q.get("o") || "";
-    const s = (q.get("s") || "").toLowerCase();
-
-    if (!merchant || !amountStr || !orderId || !s) {
-      return new NextResponse("NO", { status: 400 });
-    }
-
-    const secret2 = process.env.FK_SECRET_2 || "";
-    if (!secret2) return new NextResponse("NO", { status: 500 });
-
-    // подпись результата: md5(`${merchant}:${amount}:${secret2}:${orderId}`)
-    const calc = crypto
-      .createHash("md5")
-      .update(`${merchant}:${amountStr}:${secret2}:${orderId}`)
-      .digest("hex");
-
-    if (calc !== s) {
-      return new NextResponse("NO", { status: 403 });
-    }
-
-    // проверим заказ
-    const c = await redis();
-    const saved = await c.hGetAll(`fk:order:${orderId}`);
-    if (!saved || !saved.uid || !saved.amount) {
-      // двойные нотификации? уже обработано
-      return new NextResponse("YES"); // FK ожидает "YES"
-    }
-
-    const uid = Number(saved.uid);
-    const amt = Math.floor(Number(saved.amount));
-    if (amt > 0 && Number.isFinite(uid)) {
-      await addBalance(uid, amt);
-    }
-
-    // пометим как обработанный
-    await c.del(`fk:order:${orderId}`);
-
-    return new NextResponse("YES"); // FK считает успешным только буквальный "YES"
-  } catch (e) {
-    console.error("FK callback error:", e);
-    return new NextResponse("NO", { status: 500 });
-  }
+function md5(s: string) {
+  return createHash("md5").update(s).digest("hex");
 }
 
-// На всякий случай поддержим и GET (иногда так настраивают)
-export const GET = POST;
+export async function POST(req: NextRequest) {
+  const fd = await req.formData();
+
+  // FreeKassa может прислать в разных регистрах / форматах — читаем с запасом
+  const merchantId = (fd.get("MERCHANT_ID") || fd.get("merchant_id") || fd.get("m") || "") as string;
+  const amountRaw  = (fd.get("AMOUNT") || fd.get("amount") || fd.get("oa") || "") as string;
+  const orderId    = (fd.get("MERCHANT_ORDER_ID") || fd.get("merchant_order_id") || fd.get("o") || "") as string;
+  const sign       = (fd.get("SIGN") || fd.get("sign") || fd.get("s") || "") as string;
+
+  const amount = Number(amountRaw);
+  const secret2 = process.env.FK_SECRET_2 || "";
+
+  if (!merchantId || !orderId || !sign || !amount || !secret2) {
+    return new NextResponse("BAD", { status: 400 });
+  }
+
+  // подпись callback: md5(merchant_id:amount:secret2:order_id)
+  const check = md5(`${merchantId}:${amount}:${secret2}:${orderId}`);
+  if (check.toLowerCase() !== sign.toLowerCase()) {
+    return new NextResponse("BAD SIGN", { status: 400 });
+  }
+
+  // user id из наших пользовательских полей
+  const uidStr = (fd.get("us_uid") || fd.get("us_user") || "") as string;
+  const uid = Number(uidStr || orderId.split("_")[1]);
+  if (!uid) return new NextResponse("BAD UID", { status: 400 });
+
+  // защита от повторного зачисления (дубли callback'ов)
+  const first = await markProcessedOnce(orderId);
+  if (!first) return new NextResponse("OK"); // уже зачисляли
+
+  await addBalance(uid, amount);
+  return new NextResponse("OK");
+}
