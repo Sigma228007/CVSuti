@@ -1,221 +1,177 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
-type Method = 'card' | 'fkwallet';
+type ApiOk<T> = { ok: true } & T;
+type ApiErr = { ok: false; error?: string };
 
-function useInitData() {
-  const [initData, setInitData] = useState<string>('');
-  useEffect(() => {
-    try {
-      const tg = (globalThis as any)?.Telegram?.WebApp;
-      const raw = tg?.initData || '';
-      setInitData(typeof raw === 'string' ? raw : '');
-    } catch {
-      setInitData('');
-    }
-  }, []);
-  return initData;
+function readInitData(): string {
+  // 1) нормальный путь
+  // @ts-ignore
+  const w: any = typeof window !== 'undefined' ? window : undefined;
+  const fromTG = w?.Telegram?.WebApp?.initData;
+  if (fromTG && typeof fromTG === 'string' && fromTG.length > 0) return fromTG;
+
+  // 2) иногда Telegram кладёт в hash или search
+  const h = typeof window !== 'undefined' ? window.location.hash : '';
+  const s = typeof window !== 'undefined' ? window.location.search : '';
+  const tryKeys = ['tgWebAppData', 'tgWebAppStartParam', 'initData'];
+
+  for (const k of tryKeys) {
+    const m1 = new URLSearchParams(h.replace(/^#/, ''));
+    const v1 = m1.get(k);
+    if (v1) return v1;
+    const m2 = new URLSearchParams(s);
+    const v2 = m2.get(k);
+    if (v2) return v2;
+  }
+
+  return ''; // нет initData
 }
 
-const DEPOSIT_DETAILS =
-  process.env.NEXT_PUBLIC_DEPOSIT_DETAILS ||
-  process.env.NEXT_PUBLIC_DEPOSITS_DETAILS ||
-  '';
-
 export default function Page() {
-  const initData = useInitData();
-
+  const [initData, setInitData] = useState<string>('');
   const [balance, setBalance] = useState<number>(0);
-  const [loadingBalance, setLoadingBalance] = useState(false);
-
-  const [amount, setAmount] = useState<number>(500);
-  const [tab, setTab] = useState<Method>('card');
+  const [amount, setAmount] = useState<string>('500');
   const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
 
-  const canCall = useMemo(() => initData && initData.length > 0, [initData]);
-
-  const fetchBalance = useCallback(async () => {
-    if (!canCall) return;
-    setLoadingBalance(true);
-    try {
-      const r = await fetch('/api/balance', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ initData }),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (d?.ok && typeof d.balance === 'number') {
-        setBalance(d.balance);
-      }
-    } catch {
-      // игнор — просто не обновим баланс
-    } finally {
-      setLoadingBalance(false);
-    }
-  }, [canCall, initData]);
-
+  // подтягиваем initData
   useEffect(() => {
-    // при первом монтировании и затем каждые 12 сек
-    fetchBalance();
-    const id = setInterval(fetchBalance, 12_000);
-    return () => clearInterval(id);
-  }, [fetchBalance]);
+    setInitData(readInitData());
+    // попросим Telegram расширить webApp (необязательно)
+    // @ts-ignore
+    try { window?.Telegram?.WebApp?.expand?.(); } catch {}
+  }, []);
 
-  const onCreateCardInvoice = useCallback(async () => {
-    if (!canCall) return alert('WebApp initData недоступен.');
-    if (!amount || amount <= 0) return alert('Введите сумму > 0');
-
-    setBusy(true);
+  // баланс
+  async function refreshBalance() {
     try {
-      const r = await fetch('/api/deposit/create', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ initData, amount }),
-      });
-      const d = await r.json();
-      if (!d?.ok) {
-        alert(d?.error || 'Не удалось создать пополнение');
+      const r = await fetch('/api/balance', { cache: 'no-store' });
+      if (r.status === 401) {
+        setMsg('401: открой в Telegram (webapp) — нет initData');
         return;
       }
-      // далее админ подтверждает — баланс подтянется через опрос
-      alert('Заявка на пополнение создана. Ожидайте подтверждения.');
+      const d = await r.json();
+      if (d?.ok) setBalance(d.balance ?? 0);
     } catch {
-      alert('Сеть недоступна');
-    } finally {
-      setBusy(false);
+      setMsg('Не удалось получить баланс');
     }
-  }, [canCall, initData, amount]);
+  }
 
-  const onCreateFKWalletInvoice = useCallback(async () => {
-    if (!canCall) return alert('WebApp initData недоступен.');
-    if (!amount || amount <= 0) return alert('Введите сумму > 0');
+  useEffect(() => {
+    refreshBalance();
+  }, [initData]);
 
+  const canPay = useMemo(() => {
+    const a = Number(amount);
+    return !!initData && !busy && Number.isFinite(a) && a > 0;
+  }, [initData, busy, amount]);
+
+  async function payFK() {
+    if (!canPay) return;
     setBusy(true);
+    setMsg(null);
     try {
       const r = await fetch('/api/fkwallet/invoice', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ initData, amount }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData, amount: Number(amount) }),
       });
-      const d = await r.json();
-      if (d?.url) {
-        // В Telegram-мини-приложении внешняя ссылка открывается во внешнем браузере.
-        // Пользователь вернётся назад и баланс обновится автоматически.
-        window.open(d.url, '_blank');
+
+      if (r.status === 401) {
+        setMsg('401: нет прав — запусти бот внутри Telegram');
+        return;
+      }
+      const d: ApiOk<{ url: string }> | ApiErr = await r.json();
+
+      if ('ok' in d && d.ok && 'url' in d && d.url) {
+        // открыть во внешнем браузере
+        window.open(d.url, '_blank', 'noopener,noreferrer');
+        setMsg('Счёт открыт. После оплаты вернись — баланс обновится.');
       } else {
-        alert(d?.error || 'Не удалось создать счёт в кассе');
+        setMsg((d as ApiErr).error || 'Не удалось создать счёт');
       }
     } catch {
-      alert('Сеть недоступна');
+      setMsg('Сеть/сервер недоступен');
     } finally {
       setBusy(false);
+      // попробуем обновить баланс с задержкой
+      setTimeout(refreshBalance, 3000);
     }
-  }, [canCall, initData, amount]);
+  }
 
   return (
-    <main style={{ maxWidth: 720, margin: '0 auto', padding: 16 }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-        <h1 style={{ margin: 0 }}>GVsuti</h1>
+    <div style={{ maxWidth: 680, margin: '32px auto', padding: 16, color: '#e8eef7', fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto' }}>
+      <h1 style={{ margin: 0, marginBottom: 12 }}>GVsuti</h1>
+
+      <div style={{ marginBottom: 8, textAlign: 'right' }}>
+        Баланс: <b>{balance} ₽</b>{' '}
         <button
-          onClick={fetchBalance}
-          disabled={loadingBalance}
-          style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #444' }}
-        >
-          Баланс: {loadingBalance ? '…' : `${balance} ₽`}
+          onClick={refreshBalance}
+          style={{ background: 'transparent', color: '#8bd6ff', border: '1px solid #2b4b63', borderRadius: 8, padding: '2px 8px', cursor: 'pointer' }}>
+          Обновить
         </button>
-      </header>
+      </div>
 
-      <section style={{ marginTop: 20, padding: 16, border: '1px solid #333', borderRadius: 12 }}>
+      <div style={{ border: '1px solid #2b2f38', borderRadius: 12, padding: 16, background: '#0f141a' }}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-          <button
-            onClick={() => setTab('card')}
-            style={{
-              padding: '6px 10px',
-              borderRadius: 8,
-              border: '1px solid #444',
-              background: tab === 'card' ? '#1f6feb' : 'transparent',
-              color: tab === 'card' ? '#fff' : 'inherit',
-            }}
-          >
-            Банковская карта
-          </button>
-          <button
-            onClick={() => setTab('fkwallet')}
-            style={{
-              padding: '6px 10px',
-              borderRadius: 8,
-              border: '1px solid #444',
-              background: tab === 'fkwallet' ? '#1f6feb' : 'transparent',
-              color: tab === 'fkwallet' ? '#fff' : 'inherit',
-            }}
-          >
-            Касса (FKWallet)
-          </button>
+          <button style={{ background: '#1d2a36', color: '#cfe8ff', border: '1px solid #2b4b63', borderRadius: 999, padding: '6px 12px' }}>Банковская карта</button>
+          <button style={{ background: '#13364f', color: '#cfe8ff', border: '1px solid #2b4b63', borderRadius: 999, padding: '6px 12px' }}>Касса (FKWallet)</button>
         </div>
 
-        <label style={{ display: 'block', marginBottom: 8 }}>
-          Сумма
-          <input
-            type="number"
-            value={amount}
-            min={1}
-            onChange={(e) => setAmount(Math.max(0, Math.floor(Number(e.target.value || '0'))))}
-            style={{
-              width: '100%',
-              marginTop: 6,
-              padding: 10,
-              borderRadius: 10,
-              border: '1px solid #444',
-              background: 'transparent',
-              color: 'inherit',
-            }}
-          />
-        </label>
+        <label style={{ display: 'block', fontSize: 12, color: '#a9b5c1', marginBottom: 6 }}>Сумма</label>
+        <input
+          value={amount}
+          onChange={(e) => setAmount(e.target.value.replace(/[^\d]/g, ''))}
+          inputMode="numeric"
+          placeholder="500"
+          style={{
+            width: '100%',
+            background: '#0b1116',
+            color: '#e8eef7',
+            border: '1px solid #233141',
+            borderRadius: 10,
+            padding: '10px 12px',
+            outline: 'none',
+          }}
+        />
 
-        <div style={{ fontSize: 13, opacity: 0.8, marginBottom: 12 }}>
-          Оплата через кассу (FKWallet / FreeKassa). Нажмите «Оплатить в кассе» — откроется
-          страница оплаты во внешнем браузере. После успешной оплаты баланс обновится автоматически.
-        </div>
+        <p style={{ color: '#97a6b4', fontSize: 12, lineHeight: 1.5, marginTop: 10 }}>
+          Оплата через кассу (FKWallet / FreeKassa). Нажмите «Оплатить в кассе» — откроется страница оплаты во внешнем браузере. После успешной оплаты баланс обновится автоматически.
+        </p>
 
-        <div style={{ display: 'flex', gap: 8 }}>
-          {tab === 'card' ? (
-            <button
-              disabled={busy || !canCall}
-              onClick={onCreateCardInvoice}
-              style={{
-                padding: '10px 14px',
-                borderRadius: 10,
-                border: 'none',
-                background: '#2ea043',
-                color: '#fff',
-              }}
-            >
-              Создать заявку (карта)
-            </button>
-          ) : (
-            <button
-              disabled={busy || !canCall}
-              onClick={onCreateFKWalletInvoice}
-              style={{
-                padding: '10px 14px',
-                borderRadius: 10,
-                border: 'none',
-                background: '#2ea043',
-                color: '#fff',
-              }}
-            >
-              Оплатить в кассе
-            </button>
-          )}
-        </div>
-      </section>
+        <button
+          disabled={!canPay}
+          onClick={payFK}
+          style={{
+            background: canPay ? 'linear-gradient(90deg,#15b093,#2ec6df)' : '#1c2833',
+            color: canPay ? '#061018' : '#7b8b98',
+            border: 'none',
+            borderRadius: 10,
+            padding: '10px 14px',
+            cursor: canPay ? 'pointer' : 'not-allowed',
+          }}
+        >
+          {busy ? 'Создаём счёт…' : 'Оплатить в кассе'}
+        </button>
 
-      {DEPOSIT_DETAILS ? (
-        <section style={{ marginTop: 16, padding: 12, border: '1px dashed #444', borderRadius: 10, fontSize: 13, whiteSpace: 'pre-wrap' }}>
-          {DEPOSIT_DETAILS}
-        </section>
-      ) : null}
-    </main>
+        {!initData && (
+          <div style={{ marginTop: 10, color: '#f0c674', fontSize: 12 }}>
+            Нет <code>initData</code>. Открой ссылку **из Telegram** (бота). В браузере напрямую WebApp не авторизуется.
+          </div>
+        )}
+
+        {msg && (
+          <div style={{ marginTop: 10, color: '#d1e7ff', background: '#0b1a25', border: '1px solid #1c3a53', padding: 10, borderRadius: 8 }}>
+            {msg}
+          </div>
+        )}
+      </div>
+
+      <div style={{ opacity: 0.6, fontSize: 12, marginTop: 16, border: '1px dashed #2b2f38', borderRadius: 10, padding: 10 }}>
+        «Карта · 1245 3456 2387 3465 · Получатель: ООО “Пример”»
+      </div>
+    </div>
   );
 }
