@@ -33,7 +33,6 @@ export async function POST(req: Request) {
       }
     } catch {}
 
-    // исходные параметры для FK
     const params = new URLSearchParams({
       m: String(merchant),
       oa: String(amount),
@@ -44,9 +43,14 @@ export async function POST(req: Request) {
     });
     if (us_uid) params.set('us_uid', us_uid);
 
-    // ВАЖНО: вместо прямой ссылки на FK — отдаём ссылку на наш прокси /go/fk
-    const baseUrl = (process.env.NEXT_PUBLIC_BASE_URL || '').replace(/\/+$/, '');
-    const proxyUrl = `${baseUrl || ''}/go/fk?${params.toString()}`;
+    // Абсолютный URL на наш прокси /go/fk
+    const envBase = (process.env.NEXT_PUBLIC_BASE_URL || '').replace(/\/+$/, '');
+    const reqUrl = new URL(req.url);
+    const host = (req.headers.get('x-forwarded-host') || reqUrl.host);
+    const proto = (req.headers.get('x-forwarded-proto') || reqUrl.protocol.replace(':','')) || 'https';
+    const origin = `${proto}://${host}`;
+    const baseUrl = envBase || origin;
+    const proxyUrl = `${baseUrl}/go/fk?${params.toString()}`;
 
     return NextResponse.json({ ok: true, url: proxyUrl });
   } catch (err: any) {

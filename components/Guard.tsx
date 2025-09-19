@@ -36,33 +36,23 @@ function getInitDataFromAnyWhere(): string | null {
     }
   } catch {}
 
-  // 4) Эвристики для Telegram Web (iframe)
+  // 4) Эвристики Telegram Web (iframe / переход из t.me)
   try {
-    // 4a) ancestorOrigins (DOMStringList или что-то похожее)
     const ao: any = (window.location as any).ancestorOrigins;
     let fromAncestor = false;
 
     if (ao && typeof ao.contains === 'function') {
-      // DOMStringList в некоторых браузерах
       fromAncestor =
         ao.contains('https://web.telegram.org') || ao.contains('https://t.me');
     } else if (ao) {
-      // Любой итерируемый список -> массив строк
-      const arr = Array.from(ao as unknown as Iterable<unknown>).map((v) =>
-        String(v)
-      );
-      fromAncestor = arr.some(
-        (o) => o.includes('web.telegram.org') || o.includes('t.me')
-      );
+      const arr = Array.from(ao as unknown as Iterable<unknown>).map((v) => String(v));
+      fromAncestor = arr.some((o) => o.includes('web.telegram.org') || o.includes('t.me'));
     }
 
-    // 4b) referrer
     const ref = document.referrer || '';
-    const fromRef =
-      ref.includes('web.telegram.org') || ref.includes('t.me');
+    const fromRef = ref.includes('web.telegram.org') || ref.includes('t.me');
 
     if (fromAncestor || fromRef) {
-      // пускаем даже без initData — клиент пришлёт его в API-запросах
       return '__from_iframe__';
     }
   } catch {}
@@ -72,7 +62,6 @@ function getInitDataFromAnyWhere(): string | null {
 
 export default function Guard({ children }: { children: React.ReactNode }) {
   const [ok, setOk] = useState<boolean | null>(null);
-
   const initData = useMemo(getInitDataFromAnyWhere, []);
 
   useEffect(() => {
