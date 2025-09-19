@@ -192,3 +192,160 @@ export function pushBet(bet: BetRecord) {
   bets.unshift(bet);
   if (bets.length > 100) bets.pop();
 }
+
+// ВЫВОД СРЕДСТВ (manual by admin)
+// ----------------------------------------------------------------
+
+export type WithdrawStatus = "pending" | "approved" | "declined";
+export type Withdraw = {
+  id: string;
+  userId: number;
+  amount: number;          // списываем сразу в резерв при создании
+  details?: any;           // реквизиты вручную (карта/кошелёк и т.п.)
+  status: WithdrawStatus;
+  createdAt: number;
+  approvedAt?: number;
+  declinedAt?: number;
+};
+
+// ключи
+const wdKey = (id: string) => `wd:${id}`;          // JSON заявки на вывод
+const wdPendingZ = `wds:pending`;                  // ZSET id по времени
+
+// JSON-хелперы (у тебя уже есть — можно использовать те же)
+async function setJSON<T>(key: string, value: T): Promise<void> {
+  const c = await redis();
+  await c.set(key, JSON.stringify(value));
+}
+async function getJSON<T>(key: string): Promise<T | null> {
+  const c = await redis();
+  const s = await c.get(key);
+  if (!s) return null;
+  try { return JSON.parse(s) as T; } catch { return null; }
+}
+
+/** Создать заявку на вывод: проверяем баланс, СРАЗУ списываем средства и кладём в pending. */
+export async function createWithdrawRequest(
+  userId: number,
+  amount: number,
+  details?: any
+): Promise<Withdraw> {
+  const c = await redis();
+  amount = Math.floor(amount);
+  if (amount <= 0) throw new Error("bad amount");
+
+  // проверим баланс и спишем (резерв)
+  const current = await getBalance(userId);
+  if (current < amount) throw new Error("insufficient");
+
+  await c.decrBy(`u:${userId}:balance`, amount);
+
+  const id = `wd_${Date.now()}_${userId}_${Math.floor(Math.random() * 1e6)}`;
+  const wd: Withdraw = {
+    id,
+    userId,
+    amount,
+    details: details ?? null,
+    status: "pending",
+    createdAt: Date.now(),
+  };
+
+  await setJSON(wdKey(id), wd);
+  await c.zAdd(wdPendingZ, [{ score: wd.createdAt, value: id }]);
+
+  return wd;
+}
+
+/** Получить вывод по id */
+export async function getWithdraw(id: string): Promise<Withdraw | null> {
+  return getJSON<Withdraw>(wdKey(id));
+}
+
+/** Список ожидающих выводов (последние N) */
+export async function listPendingWithdrawals(limit = 50): Promise<Withdraw[]> {
+  const c = await redis();
+  const ids = await c.zRange(wdPendingZ, -limit, -1);
+  if (!ids.length) return [];
+  const res: Withdraw[] = [];
+  for (const id of ids) {
+    const w = await getJSON<Withdraw>(wdKey(id));
+    if (w) res.push(w);
+  }
+  res.sort((a,b)=>b.createdAt - a.createdAt);
+  return res;
+}
+
+/** Апрув вывода: просто помечаем, т.к. деньги уже списаны при создании */
+export async function approveWithdraw(id: string): Promise<Withdraw | null> {
+  const c = await redis();
+  const wd = await getJSON<Withdraw>(wdKey(id));
+  if (!wd) return null;
+  if (wd.status !== "pending") return wd;
+
+  wd.status = "approved";
+  wd.approvedAt = Date.now();
+  await setJSON(wdKey(id), wd);
+  await c.zRem(wdPendingZ, id);
+  return wd;
+}
+
+/** Деклайн вывода: ВОЗВРАЩАЕМ деньги на баланс и закрываем */
+export async function declineWithdraw(id: string): Promise<Withdraw | null> {
+  const c = await redis();
+  const wd = await getJSON<Withdraw>(wdKey(id));
+  if (!wd) return null;
+  if (wd.status !== "pending") return wd;
+
+  // Возврат средств
+  await c.incrBy(`u:${wd.userId}:balance`, wd.amount);
+
+  wd.status = "declined";
+  wd.declinedAt = Date.now();
+  await setJSON(wdKey(id), wd);
+  await c.zRem(wdPendingZ, id);
+  return wd;
+}
+
+/** История пользователя: последние депозиты и выводы */
+export async function getUserHistory(userId: number, limit = 50): Promise<{
+  deposits: Deposit[];
+  withdrawals: Withdraw[];
+}> {
+  const c = await redis();
+
+  // простая выборка: пробегаемся по pending ZSET + весь ключевой space (для MVP)
+  // Можно хранить отдельные ZSET-ы per-user, но для простоты оставим так.
+  // Скан WD
+  const wds: Withdraw[] = [];
+  // Скан DEP
+  const deps: Deposit[] = [];
+
+  // Попробуем SCAN по шаблону (медленно для огромных БД, но приемлемо для мини-аппа)
+  let cursor = 0;
+  do {
+    const [next, keys] = await c.scan(cursor, { MATCH: 'wd:*', COUNT: 500 });
+    cursor = Number(next);
+    for (const k of keys) {
+      const w = await getJSON<Withdraw>(k);
+      if (w && w.userId === userId) wds.push(w);
+    }
+  } while (cursor !== 0);
+
+  cursor = 0;
+  do {
+    const [next, keys] = await c.scan(cursor, { MATCH: 'dep:*', COUNT: 500 });
+    cursor = Number(next);
+    for (const k of keys) {
+      const d = await getJSON<Deposit>(k);
+      if (d && d.userId === userId) deps.push(d);
+    }
+  } while (cursor !== 0);
+
+  wds.sort((a,b)=>b.createdAt - a.createdAt);
+  deps.sort((a,b)=>b.createdAt - a.createdAt);
+
+  return {
+    withdrawals: wds.slice(0, limit),
+    deposits: deps.slice(0, limit),
+  };
+}

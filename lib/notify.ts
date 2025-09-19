@@ -43,3 +43,38 @@ export async function notifyUserDepositApproved(dep: { userId: number; amount: n
 export async function notifyUserDepositDeclined(dep: { userId: number; amount: number }) {
   await tgSend(dep.userId, { text: `❌ Пополнение на ${dep.amount}₽ отклонено. Если это ошибка – напишите поддержке.` });
 }
+
+// === ВЫВОДЫ ===
+export async function notifyWithdrawAdmin(req: { id: string; userId: number; amount: number; details?: any }) {
+  if (!ADMIN_CHAT || !BASE) return;
+
+  const key = process.env.ADMIN_SIGN_KEY || "";
+  const sig = signAdminPayload(
+    { id: req.id, user: req.userId, amount: req.amount },
+    key
+  );
+  const approveUrl = `${BASE}/api/withdraw/approve?id=${encodeURIComponent(req.id)}&user=${req.userId}&amount=${req.amount}&sig=${sig}`;
+  const declineUrl = `${BASE}/api/withdraw/decline?id=${encodeURIComponent(req.id)}&user=${req.userId}&amount=${req.amount}&sig=${sig}`;
+
+  const detailsStr = req.details ? `<code>${JSON.stringify(req.details)}</code>` : '—';
+
+  const text =
+    "<b>Новая заявка на вывод</b>\n" +
+    `ID: <code>${req.id}</code>\n` +
+    `User: <a href="tg://user?id=${req.userId}">${req.userId}</a>\n` +
+    `Сумма: <b>${req.amount}₽</b>\n` +
+    `Реквизиты: ${detailsStr}`;
+
+  await tgSend(ADMIN_CHAT, {
+    text, parse_mode: "HTML",
+    reply_markup: { inline_keyboard: [[{ text: "✅ Подтвердить", url: approveUrl }],[{ text: "❌ Отклонить", url: declineUrl }]] },
+    disable_web_page_preview: true
+  });
+}
+
+export async function notifyUserWithdrawApproved(p: { userId: number; amount: number }) {
+  await tgSend(p.userId, { text: `✅ Заявка на вывод ${p.amount}₽ выполнена.` });
+}
+export async function notifyUserWithdrawDeclined(p: { userId: number; amount: number }) {
+  await tgSend(p.userId, { text: `❌ Заявка на вывод ${p.amount}₽ отклонена. Средства возвращены на баланс.` });
+}
