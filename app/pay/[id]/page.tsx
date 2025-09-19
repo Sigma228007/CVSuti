@@ -11,33 +11,32 @@ export default function PayPage() {
   const [status, setStatus] = useState<'pending' | 'approved' | 'declined' | 'loading'>('loading');
   const [amount, setAmount] = useState<number | null>(null);
 
-  // URL кассы передаётся из /pay/[id]?url=...
+  // URL кассы: /pay/[id]?url=...
   const payUrl = sp.get('url') || '';
 
-  // --- 1) Авто-открытие кассы РОВНО ОДИН РАЗ ---
+  // Открываем кассу один раз
   const openedRef = useRef(false);
   useEffect(() => {
-    if (openedRef.current) return;          // уже открывали
-    if (!payUrl) return;                    // нет ссылки — нечего открывать
+    if (openedRef.current) return;
+    if (!payUrl) return;
     openedRef.current = true;
 
     const t = setTimeout(() => {
       try {
-        const tg = (window as any)?.Telegram?.WebApp;
+        // @ts-ignore
+        const tg = window?.Telegram?.WebApp;
         if (tg && typeof tg.openLink === 'function') {
-          // Всегда внешний браузер — без Instant View
           tg.openLink(payUrl, { try_instant_view: false });
           return;
         }
       } catch {}
-      // ПК или не внутри WebApp: новая вкладка
       try { window.open(payUrl, '_blank', 'noopener,noreferrer'); } catch {}
     }, 150);
 
     return () => clearTimeout(t);
   }, [payUrl]);
 
-  // --- 2) Пулинг статуса депозита ---
+  // Пулинг статуса
   useEffect(() => {
     let stop = false;
     async function tick() {
@@ -55,7 +54,6 @@ export default function PayPage() {
     return () => { stop = true; clearInterval(t); };
   }, [id]);
 
-  // --- 3) UI-состояния ---
   if (status === 'loading') {
     return <div className="center"><div className="card">Загрузка…</div></div>;
   }
@@ -64,8 +62,11 @@ export default function PayPage() {
     return (
       <div className="center">
         <div className="card fade-in" style={{ textAlign: 'center' }}>
-          <div className="h2">✅ Оплата прошла</div>
+          <div className="h2">✅ Спасибо за пополнение!</div>
           <div className="sub">Зачислено: {amount} ₽</div>
+          <div style={{ marginTop: 10, color: '#9aa9bd' }}>
+            Можете закрыть эту страницу. В боте — перезапустите мини-приложение, чтобы увидеть обновлённый баланс.
+          </div>
           <div style={{ marginTop: 12 }}>
             <button className="btn" onClick={() => router.push('/')}>На главную</button>
           </div>
@@ -78,10 +79,13 @@ export default function PayPage() {
     return (
       <div className="center">
         <div className="card fade-in" style={{ textAlign: 'center' }}>
-          <div className="h2">❌ Платёж отклонён</div>
-          <div className="sub">Если это ошибка — напишите в поддержку.</div>
+          <div className="h2">❌ Оплата не прошла</div>
+          <div className="sub">Попробуйте ещё раз.</div>
+          <div style={{ marginTop: 10, color: '#9aa9bd' }}>
+            В боте — перезапустите мини-приложение, если баланс не обновился.
+          </div>
           <div style={{ marginTop: 12 }}>
-            <button className="btn" onClick={() => router.push('/')}>Назад</button>
+            <button className="btn" onClick={() => router.push('/')}>На главную</button>
           </div>
         </div>
       </div>
@@ -94,14 +98,11 @@ export default function PayPage() {
       <div className="card fade-in" style={{ maxWidth: 560 }}>
         <div className="h2">Ожидаем оплату…</div>
         <div className="sub">
-          Касса уже открыта во внешнем браузере. После оплаты вернитесь в Telegram —
-          баланс обновится автоматически.
+          Касса открыта во внешнем браузере. После оплаты вернитесь в Telegram.
         </div>
-
         <div className="ticker" style={{ marginTop: 16 }}>
           <div>Ждём подтверждение оплаты… • страница обновится автоматически • </div>
         </div>
-
         <div style={{ marginTop: 14 }}>
           <button className="btn-outline" onClick={() => router.push('/')}>Отмена</button>
         </div>

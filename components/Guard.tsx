@@ -1,13 +1,16 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import { usePathname } from 'next/navigation';
 
-function getInitData(): string {
+function getInitDataFromAnywhere(): string | null {
   try {
-    const tg = (window as any)?.Telegram?.WebApp;
-    if (tg?.initData && String(tg.initData).length > 0) return String(tg.initData);
-  } catch {}
-  try {
+    // 1) Telegram WebApp
+    // @ts-ignore
+    const tg = (typeof window !== 'undefined') ? window?.Telegram?.WebApp : undefined;
+    if (tg?.initData) return tg.initData as string;
+
+    // 2) query (?tgWebAppData=... или ?initData=...)
     const sp = new URLSearchParams(window.location.search);
     const q =
       sp.get('tgWebAppData') ||
@@ -15,53 +18,78 @@ function getInitData(): string {
       sp.get('initdata') ||
       sp.get('init_data');
     if (q) return q;
-  } catch {}
-  try {
-    const raw = (window.location.hash || '').replace(/^#/, '');
-    if (raw) {
-      const hp = new URLSearchParams(raw);
-      const h =
-        hp.get('tgWebAppData') ||
-        hp.get('initData') ||
-        hp.get('initdata') ||
-        hp.get('init_data');
-      if (h) return h;
-    }
-  } catch {}
-  return '';
-}
 
-function looksLikeTelegramUA(): boolean {
-  try {
-    const ua = (navigator.userAgent || '').toLowerCase();
-    return /telegram|tma|tgminiapp/.test(ua);
-  } catch { return false; }
+    // 3) hash (#tgWebAppData=...)
+    const hp = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
+    const h =
+      hp.get('tgWebAppData') ||
+      hp.get('initData') ||
+      hp.get('initdata') ||
+      hp.get('init_data');
+    if (h) return h;
+
+  } catch {}
+  return null;
 }
 
 export default function Guard({ children }: { children: React.ReactNode }) {
-  // только информационная плашка; ничего не блокируем
-  const [showHint, setShowHint] = useState(false);
+  const pathname = usePathname();
 
-  const initData = useMemo(getInitData, []);
+  // Разрешённые роуты без Telegram (оплата/результат)
+  const allowWithoutTG = useMemo(() => {
+    if (!pathname) return false;
+    return pathname.startsWith('/pay/') || pathname.startsWith('/fk/');
+  }, [pathname]);
+
+  const [ok, setOk] = useState<boolean | null>(null);
+
   useEffect(() => {
-    // если нет initData и это не Telegram UA — покажем подсказку
-    const isTG = looksLikeTelegramUA() || !!(window as any)?.Telegram?.WebApp;
-    setShowHint(!initData && !isTG);
-    try { (window as any)?.Telegram?.WebApp?.ready?.(); } catch {}
-  }, [initData]);
+    try {
+      // Если специально разрешили — пропускаем
+      if (allowWithoutTG) {
+        setOk(true);
+        return;
+      }
 
-  return (
-    <>
-      {showHint && (
-        <div style={{
-          position: 'sticky', top: 0, zIndex: 50,
-          background: '#1f2937', borderBottom: '1px solid rgba(255,255,255,.08)',
-          padding: '10px 14px', color: '#e5e7eb', fontSize: 13
-        }}>
-          Это демо-режим вне Telegram. Для авторизации и показа баланса — откройте мини-приложение через бота.
+      // Проверяем наличие initData / самого WebApp
+      const hasInit = !!getInitDataFromAnywhere();
+
+      // Иногда в Web версиях помогает ancestorOrigins
+      const ao = (window.location as any).ancestorOrigins as unknown;
+      const fromTelegram =
+        !!(window as any)?.Telegram?.WebApp ||
+        (Array.isArray(ao) &&
+          (ao as string[]).some((o) =>
+            typeof o === 'string' &&
+            (o.includes('web.telegram.org') || o.includes('t.me'))
+          ));
+
+      setOk(Boolean(hasInit || fromTelegram));
+    } catch {
+      setOk(false);
+    }
+  }, [allowWithoutTG]);
+
+  if (ok === null) {
+    return (
+      <div className="center">
+        <div className="card">Загрузка…</div>
+      </div>
+    );
+  }
+
+  if (!ok) {
+    return (
+      <div className="center">
+        <div className="card" style={{ textAlign: 'center' }}>
+          <div className="h2">Доступ только из Telegram</div>
+          <div className="sub">
+            Откройте мини-приложение через нашего бота.
+          </div>
         </div>
-      )}
-      {children}
-    </>
-  );
+      </div>
+    );
+  }
+
+  return <>{children}</>;
 }
