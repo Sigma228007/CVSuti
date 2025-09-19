@@ -25,11 +25,10 @@ export default function Page() {
   async function handlePay() {
     setLoading(true);
 
-    // Узнаём заранее: доступен ли Telegram API
     const tg = (window as any)?.Telegram?.WebApp;
     const canOpenViaTG = Boolean(tg && typeof tg.openLink === 'function');
 
-    // Пред-окно создаём только если НЕТ tg.openLink
+    // пред-окно нужно только если мы НЕ внутри Telegram WebApp
     const popup = !canOpenViaTG && typeof window !== 'undefined'
       ? window.open('', '_blank')
       : null;
@@ -41,6 +40,7 @@ export default function Page() {
         body: JSON.stringify({ amount, initData }),
       });
       const data = await res.json();
+
       if (!res.ok || !data?.ok || !data?.url) {
         const msg = data?.error || `Server error (${res.status})`;
         alert('Ошибка: ' + msg);
@@ -51,12 +51,9 @@ export default function Page() {
       const url = String(data.url);
 
       if (canOpenViaTG) {
-        try {
-          tg.openLink(url, { try_instant_view: false });
-          return;
-        } catch {
-          // если вдруг упало — идём в фолбек ниже
-        }
+        // Открываем кассу прямо внутри WebApp — без диалога «Открыть?»
+        window.location.href = url;
+        return;
       }
 
       if (popup && !popup.closed) {
@@ -80,9 +77,26 @@ export default function Page() {
     <main style={{ padding: 24, fontFamily: 'Inter, Arial, sans-serif', color: '#e6eef3' }}>
       <h1 style={{ color: '#fff', marginBottom: 16 }}>GVsuti — Пополнение</h1>
 
-      <div style={{ marginTop: 8, background: '#0f1720', padding: 20, borderRadius: 12, maxWidth: 900, boxShadow: '0 6px 24px rgba(0,0,0,0.25)' }}>
+      <div
+        style={{
+          marginTop: 8,
+          background: '#0f1720',
+          padding: 20,
+          borderRadius: 12,
+          maxWidth: 900,
+          boxShadow: '0 6px 24px rgba(0,0,0,0.25)',
+        }}
+      >
         <div style={{ marginBottom: 12 }}>
-          <span style={{ fontSize: 14, background: '#111827', padding: '6px 10px', borderRadius: 8, color: '#93c5fd' }}>
+          <span
+            style={{
+              fontSize: 14,
+              background: '#111827',
+              padding: '6px 10px',
+              borderRadius: 8,
+              color: '#93c5fd',
+            }}
+          >
             Баланс:&nbsp;{balance === null ? '—' : `${balance} ₽`}
             <span style={{ opacity: 0.6, marginLeft: 8 }}>
               {balance === null ? '(открой как WebApp для авторизации)' : ''}
@@ -102,7 +116,16 @@ export default function Page() {
           min={1}
           value={amount}
           onChange={(e) => setAmount(Number(e.target.value))}
-          style={{ padding: 10, width: 220, borderRadius: 10, border: '1px solid #1f2937', background: '#0b1220', color: '#e6eef3', outline: 'none', marginBottom: 14 }}
+          style={{
+            padding: 10,
+            width: 220,
+            borderRadius: 10,
+            border: '1px solid #1f2937',
+            background: '#0b1220',
+            color: '#e6eef3',
+            outline: 'none',
+            marginBottom: 14,
+          }}
         />
 
         <p style={{ marginTop: 4, marginBottom: 14, color: '#9aa9bd', lineHeight: 1.45 }}>
@@ -112,7 +135,15 @@ export default function Page() {
         <button
           onClick={handlePay}
           disabled={loading || !amount || amount <= 0}
-          style={{ padding: '12px 18px', background: loading ? '#128a71' : '#19b894', color: '#fff', border: 'none', borderRadius: 10, cursor: loading ? 'default' : 'pointer', fontWeight: 600 }}
+          style={{
+            padding: '12px 18px',
+            background: loading ? '#128a71' : '#19b894',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 10,
+            cursor: loading ? 'default' : 'pointer',
+            fontWeight: 600,
+          }}
         >
           {loading ? 'Подготовка…' : 'Оплатить в кассе'}
         </button>
