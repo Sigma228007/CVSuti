@@ -34,13 +34,13 @@ function PageInner() {
   const [loading, setLoading] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
 
-  // для диагностики
+  // диагностика (временно — можно убрать, когда всё ок)
   const [lastUrl, setLastUrl] = useState<string>('');
   const [lastError, setLastError] = useState<string>('');
 
   const initData = useMemo(() => getInitData(), []);
 
-  // баланс — только в TG
+  // баланс — тянем только в TG
   useEffect(() => {
     let stop = false;
     async function load() {
@@ -64,11 +64,9 @@ function PageInner() {
         body: JSON.stringify({ amount, initData }),
       });
 
-      // Сначала попытаемся распарсить JSON, но при ошибке — покажем сырой текст
       let data: any = null;
       let rawText = '';
-      try { data = await r.json(); }
-      catch { rawText = await r.text().catch(()=>''); }
+      try { data = await r.json(); } catch { rawText = await r.text().catch(()=> ''); }
 
       if (!r.ok || !data?.ok || !data?.url || !data?.id) {
         const msg = data?.error || rawText || `Server error (${r.status})`;
@@ -79,15 +77,15 @@ function PageInner() {
 
       const url = String(data.url);
       const id  = String(data.id);
-
-      // сохраняем в UI (для диагностики)
       setLastUrl(url);
 
-      // Открываем кассу СЕЙЧАС (жест клика) — и даём форы
+      // 1) ОТКРЫВАЕМ кассу СЕЙЧАС (жест клика)
       tryOpenExternal(url);
+
+      // 2) ДАЁМ 500–800 мс форы iOS/Telegram, чтобы открыть внешний браузер
       await new Promise((res) => setTimeout(res, 600));
 
-      // Экран ожидания статуса
+      // 3) Переходим на экран ожидания (он только пулинг статуса)
       router.push(`/pay/${encodeURIComponent(id)}?url=${encodeURIComponent(url)}`);
     } catch (e: any) {
       setLastError(String(e?.message || e));
@@ -101,7 +99,7 @@ function PageInner() {
     <main style={{ padding: 24, fontFamily: 'Inter, Arial, sans-serif', color: '#e6eef3' }}>
       <h1 style={{ color: '#fff', marginBottom: 16 }}>GVsuti — Пополнение</h1>
 
-      <div style={{ marginTop: 8, background: '#0f1720', padding: 20, borderRadius: 12, maxWidth: 900, boxShadow: '0 6px 24px rgba(0,0,0,.25)' }}>
+      <div style={{ marginTop: 8, background: '#0f1720', padding: 20, borderRadius: 12, maxWidth: 900 }}>
         <div style={{ marginBottom: 12 }}>
           <span style={{ fontSize: 14, background: '#111827', padding: '6px 10px', borderRadius: 8, color: '#93c5fd' }}>
             Баланс: {balance === null ? '— (вне Telegram недоступно)' : `${balance} ₽`}
@@ -125,7 +123,6 @@ function PageInner() {
           {loading ? 'Подготовка…' : 'Оплатить'}
         </button>
 
-        {/* Диагностический блок (пока чиним, можно оставить; потом уберёшь) */}
         {(lastError || lastUrl) && (
           <div className="info" style={{ marginTop: 14 }}>
             {lastError && <div style={{ color: '#f87171', marginBottom: 8 }}>Ошибка: {lastError}</div>}
