@@ -26,7 +26,7 @@ export default function PayPage() {
 
   const payUrl = sp.get('url') || '';
 
-  // подтягиваем статус депозита
+  // статус депозита
   useEffect(() => {
     let stop = false;
     async function tick() {
@@ -44,7 +44,7 @@ export default function PayPage() {
     return () => { stop = true; clearInterval(t); };
   }, [id]);
 
-  // попытка автоперехода (может быть заблокирован — поэтому всегда есть fallback-кнопка)
+  // после approved — вернуть в бота
   useEffect(() => {
     if (status !== 'approved') return;
 
@@ -52,7 +52,6 @@ export default function PayPage() {
     const amt = amount ?? 0;
 
     if (!bot) {
-      // запасной путь если бот не задан
       const timer = setTimeout(() => {
         const q = new URLSearchParams({ paid: '1', amt: String(amt), t: String(Date.now()) });
         router.replace('/?' + q.toString());
@@ -66,65 +65,54 @@ export default function PayPage() {
 
     const wtg = (window as any)?.Telegram?.WebApp;
 
-    // Попробуем автопереход (может не сработать из-за sandbox/политик iOS):
     const timer = setTimeout(() => {
       try {
         if (wtg?.openTelegramLink) {
-          // 1) сначала tg://
           try { wtg.openTelegramLink(tg); } catch {}
-          // 2) затем https:// (на некоторых десктоп-клиентах воспринимается лучше)
           setTimeout(() => { try { wtg.openTelegramLink(https); } catch {} }, 180);
-          // 3) пробуем закрыть webview (моб. Telegram)
           setTimeout(() => { try { wtg.close(); } catch {} }, 350);
-          // на случай если не сработало — покажем кнопку
           setTimeout(() => setNeedManualOpen(true), 700);
           return;
         }
       } catch {}
-
-      // Telegram Web / неизвестный клиент — сразу просим клик по кнопке
       setNeedManualOpen(true);
     }, 400);
 
     return () => clearTimeout(timer);
   }, [status, amount, id, router]);
 
-  // клик по кнопке «Открыть в Telegram» (всегда в рамках user-gesture)
+  // кнопка «Открыть в Telegram» (в рамках user-gesture)
   function handleOpenBot() {
     const tgLink = manualTg || '';
     const httpsLink = manualHttps || '';
     const wtg = (window as any)?.Telegram?.WebApp;
 
-    // 1) нативный вызов
     try { wtg?.openTelegramLink?.(tgLink); } catch {}
     try { wtg?.openTelegramLink?.(httpsLink); } catch {}
 
-    // 2) прямой переход (если открыто не в Telegram, а в браузере)
     try { window.location.href = tgLink; } catch {}
-    // 3) запасной
     try { window.open(httpsLink, '_blank', 'noopener,noreferrer'); } catch {}
   }
 
+  // открыть кассу — В НЕШНЕМ БРАУЗЕРЕ (как в реальном платеже)
   function openInside() {
     if (!payUrl) return;
     setOpening(true);
     const tg = (window as any)?.Telegram?.WebApp;
     try {
-      if (tg) {
-        window.location.href = payUrl;  // внутри webview
-      } else {
-        window.open(payUrl, '_blank', 'noopener,noreferrer'); // ПК/браузер
+      if (tg?.openLink) {
+        tg.openLink(payUrl, { try_instant_view: false }); // откроет внешний браузер
+        return;
       }
-    } catch {
-      window.open(payUrl, '_blank', 'noopener,noreferrer');
-    }
+    } catch {}
+    try { window.open(payUrl, '_blank', 'noopener,noreferrer'); } catch {}
   }
 
   if (status === 'loading') {
     return <div className="center"><div className="card">Загрузка…</div></div>;
   }
 
-  // === approved ===
+  // approved
   if (status === 'approved') {
     return (
       <div className="center">
@@ -151,7 +139,7 @@ export default function PayPage() {
     );
   }
 
-  // === declined ===
+  // declined
   if (status === 'declined') {
     return (
       <div className="center">
@@ -166,7 +154,7 @@ export default function PayPage() {
     );
   }
 
-  // === pending ===
+  // pending
   return (
     <main className="center">
       <div className="card fade-in">
@@ -178,38 +166,6 @@ export default function PayPage() {
         <button className="btn" onClick={openInside} disabled={!payUrl || opening}>
           {opening ? 'Открываю…' : 'Открыть кассу'}
         </button>
-
-        {process.env.NEXT_PUBLIC_ALLOW_TEST_PAY === '1' && (
-          <div style={{ marginTop: 12 }}>
-            <button
-              className="btn-outline"
-              onClick={async () => {
-                try {
-                  const res = await fetch('/api/dev/fk/simulate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id, amount }),
-                  });
-                  const data = await res.json();
-                  if (!res.ok || !data?.ok) {
-                    alert('Симуляция не удалась: ' + (data?.error || res.status));
-                    return;
-                  }
-                  const r = await fetch(`/api/pay/status?id=${encodeURIComponent(id)}`, { cache: 'no-store' });
-                  const d = await r.json();
-                  if (r.ok && d?.ok) {
-                    setStatus(d.status);
-                    setAmount(d.amount);
-                  }
-                } catch (e: any) {
-                  alert('Ошибка симуляции: ' + (e?.message || e));
-                }
-              }}
-            >
-              Симулировать callback FK (dev)
-            </button>
-          </div>
-        )}
 
         <div className="ticker" style={{ marginTop: 16 }}>
           <div>Ожидаем подтверждение оплаты… • страница обновится автоматически • </div>
