@@ -1,5 +1,4 @@
 import './globals.css';
-import Guard from '@/components/Guard';
 
 export const metadata = {
   title: 'Nvuti-style',
@@ -9,9 +8,7 @@ export const metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ru">
-      <body>
-        <Guard>{children}</Guard>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }
