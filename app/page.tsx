@@ -8,13 +8,17 @@ import { getInitData } from '@/lib/webapp';
 function openExternal(url: string) {
   try {
     const tg = (window as any)?.Telegram?.WebApp;
-    if (tg?.openLink) { tg.openLink(url, { try_instant_view: false }); return; }
+    if (tg?.openLink) { tg.openLink(url, { try_instant_view: false }); return true; }
   } catch {}
   try {
-    const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-    document.body.appendChild(a); a.click(); a.remove(); return;
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    document.body.appendChild(a); a.click(); a.remove();
+    return true;
   } catch {}
-  try { window.open(url, '_blank', 'noopener,noreferrer'); } catch { window.location.href = url; }
+  try { window.open(url, '_blank', 'noopener,noreferrer'); return true; } catch {}
+  try { window.location.href = url; return true; } catch {}
+  return false;
 }
 
 export default function Page() {
@@ -58,10 +62,13 @@ function PageInner() {
         throw new Error(data?.error || `Server error (${r.status})`);
       }
 
-      // открыть кассу СЕЙЧАС (клик юзера)
+      // 1) Открываем кассу СЕЙЧАС (жест клика пользователя)
       openExternal(data.url);
 
-      // показать экран ожидания по реальному id депозита
+      // 2) ДАЁМ iOS Telegram время открыть внешний браузер (КРИТИЧЕСКО)
+      await new Promise((res) => setTimeout(res, 600));
+
+      // 3) Только затем уводим на экран ожидания
       router.push(`/pay/${encodeURIComponent(data.id)}?url=${encodeURIComponent(data.url)}`);
     } catch (e: any) {
       alert('Ошибка: ' + (e?.message || e));
@@ -73,6 +80,7 @@ function PageInner() {
   return (
     <main style={{ padding: 24, fontFamily: 'Inter, Arial, sans-serif', color: '#e6eef3' }}>
       <h1 style={{ color: '#fff', marginBottom: 16 }}>GVsuti — Пополнение</h1>
+
       <div style={{ marginTop: 8, background: '#0f1720', padding: 20, borderRadius: 12, maxWidth: 900 }}>
         <div style={{ marginBottom: 12 }}>
           <span style={{ fontSize: 14, background: '#111827', padding: '6px 10px', borderRadius: 8, color: '#93c5fd' }}>
@@ -81,15 +89,20 @@ function PageInner() {
         </div>
 
         <label style={{ display: 'block', marginBottom: 8, color: '#cbd5e1' }}>Сумма</label>
-        <input type="number" min={1} value={amount} onChange={(e)=>setAmount(Number(e.target.value))}
-               style={{ padding: 10, width: 220, borderRadius: 10, border: '1px solid #1f2937', background: '#0b1220', color: '#e6eef3', outline: 'none', marginBottom: 14 }} />
+        <input
+          type="number" min={1} value={amount} onChange={(e)=>setAmount(Number(e.target.value))}
+          style={{ padding: 10, width: 220, borderRadius: 10, border: '1px solid #1f2937', background: '#0b1220', color: '#e6eef3', outline: 'none', marginBottom: 14 }}
+        />
 
         <p style={{ marginTop: 4, marginBottom: 14, color: '#9aa9bd' }}>
           Оплата откроется во внешнем браузере. После успешной оплаты закройте вкладку и вернитесь в Telegram.
         </p>
 
-        <button onClick={handlePay} disabled={loading || !amount || amount <= 0}
-                style={{ padding: '12px 18px', background: loading ? '#128a71' : '#19b894', color: '#fff', border: 'none', borderRadius: 10, fontWeight: 600 }}>
+        <button
+          onClick={handlePay}
+          disabled={loading || !amount || amount <= 0}
+          style={{ padding: '12px 18px', background: loading ? '#128a71' : '#19b894', color: '#fff', border: 'none', borderRadius: 10, fontWeight: 600 }}
+        >
           {loading ? 'Подготовка…' : 'Оплатить'}
         </button>
       </div>
