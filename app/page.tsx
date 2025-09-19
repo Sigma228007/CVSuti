@@ -1,16 +1,25 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Suspense, useEffect, useMemo, useState } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { fetchBalance } from '@/lib/api';
 import { getInitData as getInitDataFromWebapp } from '@/lib/webapp';
-import { useSearchParams, useRouter } from 'next/navigation';
 
+/** Внешняя обёртка — только для Suspense */
 export default function Page() {
+  return (
+    <Suspense fallback={<main style={{ padding: 24, color: '#e6eef3' }}>Загрузка…</main>}>
+      <PageInner />
+    </Suspense>
+  );
+}
+
+function PageInner() {
   const [amount, setAmount] = useState<number>(500);
   const [loading, setLoading] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
 
-  const sp = useSearchParams();
+  const sp = useSearchParams();       // теперь внутри Suspense — ок
   const router = useRouter();
   const initData = useMemo(() => getInitDataFromWebapp() || '', []);
 
@@ -30,30 +39,27 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initData]);
 
-  // если вернулись со страницы оплаты с ?paid=1 — обновить баланс и убрать флаг из URL
+  // пришли с /pay/[id]?paid=1 — обновляем баланс и чистим query
   useEffect(() => {
     const paid = sp.get('paid');
     if (paid === '1') {
       refreshBalanceSafe().then(() => {
-        // аккуратно убираем query-параметры, чтобы не мешали дальше
         const url = new URL(window.location.href);
         url.searchParams.delete('paid');
         url.searchParams.delete('amt');
         url.searchParams.delete('t');
-        router.replace(url.pathname + (url.search ? '?' + url.searchParams.toString() : ''));
+        router.replace(url.pathname + (url.searchParams.toString() ? `?${url.searchParams.toString()}` : ''));
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sp]);
 
-  // рефреш при возврате на вкладку / при показе страницы
+  // рефреш при возвращении на вкладку
   useEffect(() => {
     function onFocus() { refreshBalanceSafe(); }
     function onVisible() { if (document.visibilityState === 'visible') refreshBalanceSafe(); }
-
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisible);
-
     return () => {
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisible);
