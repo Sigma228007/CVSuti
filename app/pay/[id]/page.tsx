@@ -6,11 +6,11 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 export default function PayPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
-  const sp = useSearchParams();
 
   const [status, setStatus] = useState<'pending' | 'approved' | 'declined' | 'loading'>('loading');
   const [amount, setAmount] = useState<number | null>(null);
 
+  // Пулинг статуса
   useEffect(() => {
     let stop = false;
     async function tick() {
@@ -34,9 +34,11 @@ export default function PayPage() {
           <div className="h2">✅ Спасибо за пополнение!</div>
           <div className="sub">Зачислено: {amount} ₽</div>
           <div style={{ marginTop: 10, color: '#9aa9bd' }}>
-            Можете закрыть эту страницу. В Telegram перезапустите мини-приложение, чтобы увидеть обновлённый баланс.
+            Можете закрыть эту вкладку. В Telegram перезапустите мини-приложение, чтобы увидеть обновлённый баланс.
           </div>
-          <div style={{ marginTop: 12 }}><button className="btn" onClick={()=>router.push('/')}>На главную</button></div>
+          <div style={{ marginTop: 12 }}>
+            <button className="btn" onClick={() => router.push('/')}>На главную</button>
+          </div>
         </div>
       </div>
     );
@@ -51,7 +53,9 @@ export default function PayPage() {
           <div style={{ marginTop: 10, color: '#9aa9bd' }}>
             В Telegram перезапустите мини-приложение, если баланс не обновился.
           </div>
-          <div style={{ marginTop: 12 }}><button className="btn" onClick={()=>router.push('/')}>На главную</button></div>
+          <div style={{ marginTop: 12 }}>
+            <button className="btn" onClick={() => router.push('/')}>На главную</button>
+          </div>
         </div>
       </div>
     );
@@ -63,8 +67,12 @@ export default function PayPage() {
       <div className="card fade-in" style={{ maxWidth: 560 }}>
         <div className="h2">Ожидаем оплату…</div>
         <div className="sub">Касса открыта во внешнем браузере. После оплаты вернитесь в Telegram.</div>
-        <div className="ticker" style={{ marginTop: 16 }}><div>Ждём подтверждение… • страница обновится автоматически • </div></div>
-        <div style={{ marginTop: 14 }}><button className="btn-outline" onClick={()=>router.push('/')}>Отмена</button></div>
+        <div className="ticker" style={{ marginTop: 16 }}>
+          <div>Ждём подтверждение… • страница обновится автоматически • </div>
+        </div>
+        <div style={{ marginTop: 14 }}>
+          <button className="btn-outline" onClick={() => router.push('/')}>Отмена</button>
+        </div>
       </div>
     </main>
   );

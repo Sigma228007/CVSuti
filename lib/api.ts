@@ -1,6 +1,6 @@
 import { getInitData } from "./webapp";
 
-/** POST с автоматическим X-Init-Data */
+/** POST с X-Init-Data */
 export async function apiPost<T=any>(url: string, payload: Record<string, any> = {}): Promise<T> {
   const initData = getInitData();
   const res = await fetch(url, {
@@ -15,7 +15,7 @@ export async function apiPost<T=any>(url: string, payload: Record<string, any> =
   return res.json();
 }
 
-/** GET баланса (X-Init-Data в заголовке) */
+/** Баланс (X-Init-Data в заголовке) */
 export async function fetchBalance(): Promise<number> {
   const initData = getInitData();
   const res = await fetch(`/api/balance?ts=${Date.now()}`, {
