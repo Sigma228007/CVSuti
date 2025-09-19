@@ -1,56 +1,72 @@
 'use client';
 
-import React, { Suspense, useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { fetchBalance } from '@/lib/api';
-import { getInitData as getInitDataFromWebapp } from '@/lib/webapp';
 
-export default function Page() {
-  return (
-    <Suspense fallback={<main style={{ padding: 24, color: '#e6eef3' }}>Загрузка…</main>}>
-      <PageInner />
-    </Suspense>
-  );
+function openExternal(url: string) {
+  try {
+    // Открытие во внешнем браузере из Telegram WebApp (iOS требует user gesture)
+    // @ts-ignore
+    const tg = (window as any)?.Telegram?.WebApp;
+    if (tg && typeof tg.openLink === 'function') {
+      tg.openLink(url, { try_instant_view: false });
+      return;
+    }
+  } catch {}
+  // ПК / обычный браузер
+  window.open(url, '_blank', 'noopener,noreferrer');
 }
 
-function PageInner() {
+export default function Page() {
   const router = useRouter();
   const [amount, setAmount] = useState<number>(500);
   const [loading, setLoading] = useState(false);
-  const [balance, setBalance] = useState<number | null>(null);
 
-  const initData = useMemo(() => getInitDataFromWebapp() || '', []);
-
-  async function refreshBalanceSafe() {
-    if (!initData) { setBalance(null); return; }
+  // initData (на всякий случай — если нужно пробрасывать в API)
+  const initData = useMemo(() => {
     try {
-      const b = await fetchBalance();
-      setBalance(b);
-    } catch {
-      setBalance(null);
-    }
-  }
-
-  useEffect(() => { refreshBalanceSafe(); }, [initData]);
+      // @ts-ignore
+      const tg = (window as any)?.Telegram?.WebApp;
+      if (tg?.initData) return tg.initData as string;
+    } catch {}
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      return (
+        sp.get('tgWebAppData') ||
+        sp.get('initData') ||
+        sp.get('initdata') ||
+        sp.get('init_data') ||
+        undefined
+      );
+    } catch {}
+    return undefined;
+  }, []);
 
   async function handlePay() {
+    if (!amount || amount <= 0) return;
     setLoading(true);
     try {
-      const res = await fetch('/api/fkwallet/invoice', {
+      // ВНИМАНИЕ: здесь вызываем ваш старт оплаты, который ДОЛЖЕН вернуть { ok, id, url }
+      // id — это депозит (для статуса / ожидания), url — ссылка кассы
+      const r = await fetch('/api/pay/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ amount, initData }),
       });
-      const data = await res.json();
-      if (!res.ok || !data?.ok || !data?.url || !data?.id) {
-        alert('Ошибка: ' + (data?.error || `Server error (${res.status})`));
-        return;
+      const data = await r.json();
+
+      if (!r.ok || !data?.ok || !data?.url || !data?.id) {
+        throw new Error(data?.error || `Server error (${r.status})`);
       }
 
-      // теперь используем настоящий id депозита
+      // КРИТИЧЕСКОЕ — открываем кассу СЕЙЧАС, пока мы ещё в обработчике клика
+      openExternal(data.url);
+
+      // И параллельно отрисовываем экран ожидания статуса
+      // (он больше НЕ пытается открыть кассу сам, он толькоpoll'ит статус)
       router.push(`/pay/${encodeURIComponent(data.id)}?url=${encodeURIComponent(data.url)}`);
     } catch (e: any) {
-      alert('Ошибка сети: ' + (e?.message || e));
+      alert('Ошибка: ' + (e?.message || e));
     } finally {
       setLoading(false);
     }
@@ -80,8 +96,7 @@ function PageInner() {
               color: '#93c5fd',
             }}
           >
-            Баланс:&nbsp;
-            {balance === null ? '— (вне Telegram)' : `${balance} ₽`}
+            Баланс: — <span style={{ opacity: 0.6, marginLeft: 8 }}>(вне Telegram авторизация недоступна)</span>
           </span>
         </div>
 
@@ -104,8 +119,8 @@ function PageInner() {
         />
 
         <p style={{ marginTop: 4, marginBottom: 14, color: '#9aa9bd', lineHeight: 1.45 }}>
-          Оплата через кассу (FKWallet / FreeKassa). Нажмите «Оплатить» — откроется внешняя
-          страница оплаты. После успешной оплаты вернитесь в Telegram — баланс обновится автоматически.
+          В Telegram оплата пройдёт во внешнем браузере. После успешной оплаты на странице будет «Спасибо,
+          можете закрыть вкладку», а в боте перезапустите мини-приложение — баланс обновится.
         </p>
 
         <button
