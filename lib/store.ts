@@ -48,7 +48,8 @@ export async function getNonce(uid?: number): Promise<number> {
 
 /* ===================== DEPOSITS ===================== */
 
-export type DepositMethod = "card" | "fkwallet";
+// ОСТАВЛЯЕМ ТОЛЬКО КАССУ
+export type DepositMethod = "fkwallet";
 export type DepositStatus = "pending" | "approved" | "declined";
 
 export type Deposit = {
@@ -63,12 +64,10 @@ export type Deposit = {
   meta?: any;
 };
 
-// ключи
-const depKey = (id: string) => `dep:${id}`;                      // JSON депозита
-const depPendingZ = `deps:pending`;                              // ZSET id по времени
-const processedOnceKey = (orderId: string) => `cb:once:${orderId}`; // защита от дублей
+const depKey = (id: string) => `dep:${id}`;
+const depPendingZ = `deps:pending`;
+const processedOnceKey = (orderId: string) => `cb:once:${orderId}`;
 
-// небольшие JSON-хелперы
 async function setJSON<T>(key: string, value: T): Promise<void> {
   const c = await redis();
   await c.set(key, JSON.stringify(value));
@@ -85,7 +84,7 @@ async function getJSON<T>(key: string): Promise<T | null> {
   }
 }
 
-/** Создать заявку на депозит (pending) */
+/** Создать заявку на депозит (pending) — если где-то ещё используешь ручные заявки */
 export async function createDepositRequest(
   userId: number,
   amount: number,
@@ -110,21 +109,17 @@ export async function createDepositRequest(
   return dep;
 }
 
-/** Получить депозит по id */
 export async function getDeposit(id: string): Promise<Deposit | null> {
   return getJSON<Deposit>(depKey(id));
 }
 
-/** Апрув: зачислить и закрыть */
 export async function approveDeposit(id: string): Promise<Deposit | null> {
   const c = await redis();
   const dep = await getJSON<Deposit>(depKey(id));
   if (!dep) return null;
   if (dep.status !== "pending") return dep;
 
-  // зачисляем
   await addBalance(dep.userId, dep.amount);
-
   dep.status = "approved";
   dep.approvedAt = Date.now();
 
@@ -133,7 +128,6 @@ export async function approveDeposit(id: string): Promise<Deposit | null> {
   return dep;
 }
 
-/** Деклайн: пометить и закрыть */
 export async function declineDeposit(id: string): Promise<Deposit | null> {
   const c = await redis();
   const dep = await getJSON<Deposit>(depKey(id));
@@ -148,10 +142,8 @@ export async function declineDeposit(id: string): Promise<Deposit | null> {
   return dep;
 }
 
-/** Список ожидающих (последние N) */
 export async function listPending(limit = 50): Promise<Deposit[]> {
   const c = await redis();
-  // берём последние по времени
   const ids = await c.zRange(depPendingZ, -limit, -1);
   if (!ids.length) return [];
   const res: Deposit[] = [];
@@ -159,20 +151,19 @@ export async function listPending(limit = 50): Promise<Deposit[]> {
     const d = await getJSON<Deposit>(depKey(id));
     if (d) res.push(d);
   }
-  // отсортируем по времени убыв.
   res.sort((a, b) => b.createdAt - a.createdAt);
   return res;
 }
 
-/** Пометить «обработано единожды» для защиты от дублей callback'ов.
- *  Возвращает true, если пометка установлена впервые; false — если уже была. */
 export async function markProcessedOnce(orderId: string, ttlSeconds = 24 * 60 * 60): Promise<boolean> {
   if (!orderId) return false;
   const c = await redis();
-  // SETNX + EX
   const ok = await c.set(processedOnceKey(orderId), "1", { NX: true, EX: ttlSeconds });
   return ok === "OK";
 }
+
+/* ===== Ставки в памяти ===== */
+
 export type BetRecord = {
   id: string;
   userId: number;
@@ -195,10 +186,8 @@ export type BetRecord = {
   };
 };
 
-/** Память на 100 последних записей. В твоём API используется `bets.unshift(rec)`. */
 export const bets: BetRecord[] = [];
 
-/** Удобная обёртка — можно вызывать вместо прямого unshift. */
 export function pushBet(bet: BetRecord) {
   bets.unshift(bet);
   if (bets.length > 100) bets.pop();

@@ -10,13 +10,11 @@ function verifyInitDataString(initData: string, botToken: string): { ok: boolean
     const hash = params.get('hash') || '';
     params.delete('hash');
 
-    // data_check_string
     const dataCheckString = Array.from(params.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([k, v]) => `${k}=${v}`)
       .join('\n');
 
-    // secret_key = HMAC_SHA256("WebAppData", botToken)
     const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
     const myHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
 
@@ -38,7 +36,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'BOT_TOKEN missing' }, { status: 500 });
   }
 
-  const initData = req.nextUrl.searchParams.get('initData') || '';
+  // НОВОЕ: берём initData из заголовка, как делает твой фронт
+  const initData =
+    req.headers.get('x-init-data') ||
+    req.nextUrl.searchParams.get('initData') ||
+    '';
+
   if (!initData) {
     return NextResponse.json({ ok: false, error: 'no initData' }, { status: 401 });
   }

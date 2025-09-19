@@ -1,8 +1,11 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { fetchBalance } from '@/lib/api';
+import { getInitData } from '@/lib/webapp';
 
-function openExternal(url: string) {
+function openExternalRobust(url: string) {
+  // 1) пробуем Telegram API
   try {
     const tg = (window as any)?.Telegram?.WebApp;
     if (tg && typeof tg.openLink === 'function') {
@@ -10,33 +13,36 @@ function openExternal(url: string) {
       return;
     }
   } catch {}
-  window.open(url, '_blank', 'noopener,noreferrer');
+
+  // 2) если API нет, пробуем пред-окно (но оно создаётся в handlePay)
+  window.location.href = url;
 }
 
 export default function Page() {
   const [amount, setAmount] = useState<number>(500);
   const [loading, setLoading] = useState(false);
+  const [balance, setBalance] = useState<number | null>(null);
 
-  // читаем initData (если запущено как Telegram WebApp)
-  const initData = useMemo(() => {
-    try {
-      const tg = (window as any)?.Telegram?.WebApp;
-      if (tg?.initData) return tg.initData as string;
-    } catch {}
-    try {
-      const urlParams = new URLSearchParams(window.location.search);
-      return (
-        urlParams.get('initData') ||
-        urlParams.get('initdata') ||
-        urlParams.get('init_data') ||
-        undefined
-      );
-    } catch {}
-    return undefined;
+  const initData = useMemo(() => getInitData() || undefined, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const b = await fetchBalance();
+        setBalance(b);
+      } catch {
+        setBalance(null);
+      }
+    })();
   }, []);
 
   async function handlePay() {
     setLoading(true);
+
+    // Важно для iOS: заранее открыть пустое окно синхронно (жест пользователя),
+    // чтобы потом безопасно сменить location даже если Telegram API недоступен.
+    const popup = typeof window !== 'undefined' ? window.open('', '_blank') : null;
+
     try {
       const res = await fetch('/api/fkwallet/invoice', {
         method: 'POST',
@@ -44,18 +50,39 @@ export default function Page() {
         body: JSON.stringify({ amount, initData }),
       });
       const data = await res.json();
-      if (!res.ok || !data?.ok) {
+      if (!res.ok || !data?.ok || !data?.url) {
         const msg = data?.error || `Server error (${res.status})`;
         alert('Ошибка: ' + msg);
         return;
       }
-      openExternal(data.url);
+
+      // Сначала пробуем Telegram API
+      try {
+        const tg = (window as any)?.Telegram?.WebApp;
+        if (tg?.openLink) {
+          tg.openLink(data.url, { try_instant_view: false });
+          return;
+        }
+      } catch {}
+
+      // Иначе используем пред-окно
+      if (popup) {
+        popup.location.href = data.url;
+        return;
+      }
+
+      // Фолбек
+      openExternalRobust(data.url);
     } catch (e: any) {
       alert('Ошибка сети: ' + (e?.message || e));
+      if (popup) popup.close();
     } finally {
       setLoading(false);
     }
   }
+
+  const depositDetails =
+    (process.env.NEXT_PUBLIC_DEPOSIT_DETAILS || process.env.NEXT_PUBLIC_DEPOSITS_DETAILS || '').toString();
 
   return (
     <main style={{ padding: 24, fontFamily: 'Inter, Arial, sans-serif', color: '#e6eef3' }}>
@@ -81,9 +108,19 @@ export default function Page() {
               color: '#93c5fd',
             }}
           >
-            Баланс: 0 ₽ <span style={{ opacity: 0.6, marginLeft: 8 }}>(демо-заглушка)</span>
+            Баланс:&nbsp;
+            {balance === null ? '—' : `${balance} ₽`}
+            <span style={{ opacity: 0.6, marginLeft: 8 }}>
+              {balance === null ? '(открой как WebApp для авторизации)' : ''}
+            </span>
           </span>
         </div>
+
+        {depositDetails && (
+          <div style={{ marginBottom: 12, color: '#9aa9bd' }}>
+            <small>Реквизиты: {depositDetails}</small>
+          </div>
+        )}
 
         <label style={{ display: 'block', marginBottom: 8, color: '#cbd5e1' }}>Сумма</label>
         <input
@@ -104,8 +141,7 @@ export default function Page() {
         />
 
         <p style={{ marginTop: 4, marginBottom: 14, color: '#9aa9bd', lineHeight: 1.45 }}>
-          Оплата через кассу (FKWallet / FreeKassa). Нажмите «Оплатить в кассе» — откроется внешняя
-          страница оплаты. После успешной оплаты баланс обновится автоматически.
+          Оплата через кассу (FKWallet / FreeKassa). После успешной оплаты админ подтвердит — баланс обновится.
         </p>
 
         <button
@@ -123,13 +159,6 @@ export default function Page() {
         >
           {loading ? 'Подготовка…' : 'Оплатить в кассе'}
         </button>
-
-        <div style={{ marginTop: 16, color: '#9aa9bd' }}>
-          <small>
-            Подсказка: если тестируешь в обычном браузере, <code>initData</code> может отсутствовать — сервер вернёт 401 на других эндпойнтах, но
-            создание счёта для Freekassa всё равно отработает. Для полного флоу открой WebApp в Telegram.
-          </small>
-        </div>
       </div>
     </main>
   );

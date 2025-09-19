@@ -1,16 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyInitData } from "@/lib/sign";
 import { createDepositRequest } from "@/lib/store";
-import { notifyDepositAdmin } from "@/lib/notify"; // оставь, если есть notify.ts
-
-type DepositMethod = "card" | "fkwallet";
+import { notifyDepositAdmin } from "@/lib/notify";
 
 export async function POST(req: NextRequest) {
   try {
     const { initData, amount, method, meta } = (await req.json()) as {
       initData?: string;
       amount?: number;
-      method?: DepositMethod;
+      method?: 'fkwallet' | string; // карта отключена
       meta?: any;
     };
 
@@ -31,12 +29,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "bad amount" }, { status: 400 });
     }
 
-    const m: DepositMethod = (method === "fkwallet" || method === "card") ? method : "card";
+    // карта отключена
+    const m: 'fkwallet' = 'fkwallet';
 
-    // <-- ВАЖНО: теперь передаём 3 аргумента (и meta опционально)
     const dep = await createDepositRequest(v.user.id, Math.floor(amt), m, meta);
 
-    // уведомляем админа (если настроен lib/notify.ts)
     try {
       await notifyDepositAdmin({ id: dep.id, userId: dep.userId, amount: dep.amount });
     } catch {}
