@@ -3,20 +3,9 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 
-function openBotDeepLink(bot: string, payload: string) {
+function buildBotLink(bot: string, payload: string) {
   const botName = bot.replace(/^@/, '');
-  const link = `https://t.me/${botName}?startapp=${encodeURIComponent(payload)}`;
-  const tg = (window as any)?.Telegram?.WebApp;
-
-  // ✅ единственный «правильный» путь — поручаем навигацию самому Telegram
-  if (tg?.openTelegramLink) {
-    tg.openTelegramLink(link);
-    try { tg.close(); } catch {}
-    return;
-  }
-
-  // 🔁 Подстраховка для редких окружений: покажем ссылку пользователю
-  alert('Откройте мини-приложение по ссылке:\n' + link);
+  return `https://t.me/${botName}?startapp=${encodeURIComponent(payload)}`;
 }
 
 export default function PayPage() {
@@ -27,11 +16,11 @@ export default function PayPage() {
   const [status, setStatus] = useState<'pending' | 'approved' | 'declined' | 'loading'>('loading');
   const [amount, setAmount] = useState<number | null>(null);
   const [opening, setOpening] = useState(false);
+  const [fallbackLink, setFallbackLink] = useState<string | null>(null); // ссылка для Telegram Web
 
-  // URL кассы передаётся из главной: /pay/[id]?url=...
   const payUrl = sp.get('url') || '';
 
-  // Пуллим статус депозита
+  // пуллим статус депозита
   useEffect(() => {
     let stop = false;
     async function tick() {
@@ -49,23 +38,36 @@ export default function PayPage() {
     return () => { stop = true; clearInterval(t); };
   }, [id]);
 
-  // После успешной оплаты — вернуть в бота через deep-link
+  // после approved — пробуем вернуть в бота
   useEffect(() => {
     if (status !== 'approved') return;
+
     const bot = (process.env.NEXT_PUBLIC_BOT_NAME || '').trim();
     const amt = amount ?? 0;
 
-    if (bot) {
-      const timer = setTimeout(() => openBotDeepLink(bot, `paid_${id}_${amt}`), 500);
+    if (!bot) {
+      // запасной путь (не задан бот)
+      const timer = setTimeout(() => {
+        const q = new URLSearchParams({ paid: '1', amt: String(amt), t: String(Date.now()) });
+        router.replace('/?' + q.toString());
+      }, 800);
       return () => clearTimeout(timer);
     }
 
-    // Если бот не задан — мягкий запасной путь (останемся на сайте)
-    const timer = setTimeout(() => {
-      const q = new URLSearchParams({ paid: '1', amt: String(amt), t: String(Date.now()) });
-      router.replace('/?' + q.toString());
-    }, 800);
-    return () => clearTimeout(timer);
+    const link = buildBotLink(bot, `paid_${id}_${amt}`);
+    const tg = (window as any)?.Telegram?.WebApp;
+
+    // мобильные/десктоп клиенты Telegram
+    if (tg?.openTelegramLink) {
+      const timer = setTimeout(() => {
+        try { tg.openTelegramLink(link); } catch {}
+        try { tg.close(); } catch {}
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+
+    // Telegram Web (sandbox) — показываем кнопку-ссылку
+    setFallbackLink(link);
   }, [status, amount, id, router]);
 
   function openInside() {
@@ -74,11 +76,9 @@ export default function PayPage() {
     const tg = (window as any)?.Telegram?.WebApp;
     try {
       if (tg) {
-        // Внутри Telegram webview открываем кассу в этом же окне
-        window.location.href = payUrl;
+        window.location.href = payUrl; // внутри webview
       } else {
-        // ПК/обычный браузер
-        window.open(payUrl, '_blank', 'noopener,noreferrer');
+        window.open(payUrl, '_blank', 'noopener,noreferrer'); // ПК/браузер
       }
     } catch {
       window.open(payUrl, '_blank', 'noopener,noreferrer');
@@ -87,6 +87,33 @@ export default function PayPage() {
 
   if (status === 'loading') {
     return <div className="center"><div className="card">Загрузка…</div></div>;
+  }
+
+  // === fallback-экран для Telegram Web: показать кликабельную ссылку в бота ===
+  if (status === 'approved' && fallbackLink) {
+    return (
+      <div className="center">
+        <div className="card fade-in" style={{ textAlign: 'center', maxWidth: 520 }}>
+          <div className="h2">✅ Оплата прошла</div>
+          <div className="sub" style={{ marginBottom: 16 }}>
+            Нажмите кнопку ниже, чтобы вернуться в мини-приложение Telegram.
+          </div>
+          <a
+            href={fallbackLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn"
+            style={{ display: 'inline-block' }}
+          >
+            Открыть в Telegram
+          </a>
+          <div className="sub" style={{ marginTop: 12, fontSize: 12, opacity: .8 }}>
+            Если не открылось, скопируйте ссылку вручную:<br />
+            <code style={{ wordBreak: 'break-all' }}>{fallbackLink}</code>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (status === 'approved') {
