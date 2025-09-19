@@ -2,6 +2,16 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 
+function uaLooksLikeTelegram(): boolean {
+  try {
+    const ua = (navigator && navigator.userAgent) ? navigator.userAgent.toLowerCase() : '';
+    // мобильный Telegram содержит "Telegram" (iOS/Android), иногда "tgminiapp"
+    return /telegram|tgminiapp/.test(ua);
+  } catch {
+    return false;
+  }
+}
+
 function getInitDataFromAnyWhere(): string | null {
   if (typeof window === 'undefined') return null;
 
@@ -11,7 +21,7 @@ function getInitDataFromAnyWhere(): string | null {
     if (tg?.initData && String(tg.initData).length > 0) return String(tg.initData);
   } catch {}
 
-  // 2) ?tgWebAppData / ?initData в query
+  // 2) ?tgWebAppData / ?initData
   try {
     const sp = new URLSearchParams(window.location.search);
     const q =
@@ -22,7 +32,7 @@ function getInitDataFromAnyWhere(): string | null {
     if (q) return q;
   } catch {}
 
-  // 3) #tgWebAppData / #initData в hash
+  // 3) #tgWebAppData / #initData
   try {
     const raw = (window.location.hash || '').replace(/^#/, '');
     if (raw) {
@@ -62,14 +72,29 @@ function getInitDataFromAnyWhere(): string | null {
 
 export default function Guard({ children }: { children: React.ReactNode }) {
   const [ok, setOk] = useState<boolean | null>(null);
+
   const initData = useMemo(getInitDataFromAnyWhere, []);
 
   useEffect(() => {
+    // Телеграм может подставить initData чуть позже — делаем два тика
+    let cancelled = false;
+
+    function decide() {
+      if (cancelled) return;
+      const hasInit = Boolean(getInitDataFromAnyWhere());
+      const looksTG = uaLooksLikeTelegram();
+      // Пропускаем, если есть initData ИЛИ userAgent указывает на Telegram
+      setOk(hasInit || looksTG);
+    }
+
     try {
       const tg = (window as any)?.Telegram?.WebApp;
       if (tg?.ready) tg.ready();
     } catch {}
-    setOk(Boolean(initData));
+
+    decide();
+    const t = setTimeout(decide, 100); // маленькая задержка — вдруг initData появится
+    return () => { cancelled = true; clearTimeout(t); };
   }, [initData]);
 
   if (ok === null) return null;
