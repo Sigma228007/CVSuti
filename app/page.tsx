@@ -2,14 +2,14 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { fetchBalance } from '@/lib/api';
-import { getInitData } from '@/lib/webapp';
+import { getInitData as getInitDataFromWebapp } from '@/lib/webapp';
 
 export default function Page() {
   const [amount, setAmount] = useState<number>(500);
   const [loading, setLoading] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
 
-  const initData = useMemo(() => getInitData() || undefined, []);
+  const initData = useMemo(() => getInitDataFromWebapp() || '', []);
 
   useEffect(() => {
     (async () => {
@@ -17,33 +17,57 @@ export default function Page() {
         const b = await fetchBalance();
         setBalance(b);
       } catch {
+        // вне Telegram бэкенд вернёт 401 — просто показываем прочерк
         setBalance(null);
       }
     })();
   }, []);
 
   async function handlePay() {
-  setLoading(true);
-  try {
-    const res = await fetch('/api/pay/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount, initData }),
-    });
-    const data = await res.json();
-    if (!res.ok || !data?.ok || !data?.id || !data?.url) {
-      const msg = data?.error || `Server error (${res.status})`;
-      alert('Ошибка: ' + msg);
-      return;
+    setLoading(true);
+    try {
+      if (initData) {
+        // === ТЕЛЕГРАМ: новый флоу (внутренняя страница + авто-обновление статуса) ===
+        const res = await fetch('/api/pay/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ amount, initData }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.ok || !data?.id || !data?.url) {
+          const msg = data?.error || `Server error (${res.status})`;
+          alert('Ошибка: ' + msg);
+          return;
+        }
+        // передаем ссылку кассы в query
+        window.location.href = `/pay/${data.id}?url=${encodeURIComponent(data.url)}`;
+      } else {
+        // === НЕ ТЕЛЕГРАМ (браузер/ПК): старый флоу — прямой инвойс без initData ===
+        const res = await fetch('/api/fkwallet/invoice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ amount }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.ok || !data?.url) {
+          const msg = data?.error || `Server error (${res.status})`;
+          alert('Ошибка: ' + msg);
+          return;
+        }
+        // на телефоне это будет тот же webview; на ПК откроем в новой вкладке
+        const inTelegram = !!(window as any)?.Telegram?.WebApp;
+        if (inTelegram) {
+          window.location.href = data.url;
+        } else {
+          window.open(data.url, '_blank', 'noopener,noreferrer');
+        }
+      }
+    } catch (e: any) {
+      alert('Ошибка сети: ' + (e?.message || e));
+    } finally {
+      setLoading(false);
     }
-    // Переходим на внутреннюю страницу, передаём ссылку кассы в query
-    window.location.href = `/pay/${data.id}?url=${encodeURIComponent(data.url)}`;
-  } catch (e: any) {
-    alert('Ошибка сети: ' + (e?.message || e));
-  } finally {
-    setLoading(false);
   }
-}
 
   const depositDetails =
     (process.env.NEXT_PUBLIC_DEPOSIT_DETAILS || process.env.NEXT_PUBLIC_DEPOSITS_DETAILS || '').toString();
@@ -74,7 +98,7 @@ export default function Page() {
           >
             Баланс:&nbsp;{balance === null ? '—' : `${balance} ₽`}
             <span style={{ opacity: 0.6, marginLeft: 8 }}>
-              {balance === null ? '(открой как WebApp для авторизации)' : ''}
+              {balance === null ? '(вне Telegram авторизация недоступна)' : ''}
             </span>
           </span>
         </div>
@@ -104,7 +128,8 @@ export default function Page() {
         />
 
         <p style={{ marginTop: 4, marginBottom: 14, color: '#9aa9bd', lineHeight: 1.45 }}>
-          Оплата через кассу (FKWallet / FreeKassa). После успешной оплаты админ подтвердит — баланс обновится.
+          В Telegram оплата пройдёт внутри мини-приложения, статус обновится автоматически.
+          В обычном браузере откроется касса на сайте платёжного провайдера.
         </p>
 
         <button
@@ -120,7 +145,7 @@ export default function Page() {
             fontWeight: 600,
           }}
         >
-          {loading ? 'Подготовка…' : 'Оплатить в кассе'}
+          {loading ? 'Подготовка…' : 'Оплатить'}
         </button>
       </div>
     </main>
