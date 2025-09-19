@@ -3,6 +3,26 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 
+function isInTelegram(): boolean {
+  try {
+    return !!(window as any)?.Telegram?.WebApp;
+  } catch { return false; }
+}
+
+function openTelegramDeepLink(bot: string, payload: string) {
+  const link = `https://t.me/${bot.replace(/^@/, '')}?startapp=${encodeURIComponent(payload)}`;
+  try {
+    const tg = (window as any)?.Telegram?.WebApp;
+    if (tg?.openTelegramLink) {
+      tg.openTelegramLink(link);
+      return true;
+    }
+  } catch {}
+  // запасной путь
+  window.location.href = link;
+  return true;
+}
+
 export default function PayPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -33,27 +53,39 @@ export default function PayPage() {
     return () => { stop = true; clearInterval(t); };
   }, [id]);
 
-  // авто-возврат на главную после успешной оплаты (форсим обновление query-параметром)
+  // === КЛЮЧЕВОЕ: после approved открываем мини-приложение через deep-link к боту ===
   useEffect(() => {
-    if (status === 'approved') {
-      const a = amount ?? 0;
+    if (status !== 'approved') return;
+
+    const botName = (process.env.NEXT_PUBLIC_BOT_NAME || '').trim(); // например @NvutiPointsBot
+    const amt = amount ?? 0;
+
+    // Внутри Telegram: открываем бота ссылкой, мини-ап запустится с initData
+    if (botName && isInTelegram()) {
+      // небольшая задержка для UX
       const t = setTimeout(() => {
-        const q = new URLSearchParams({ paid: '1', amt: String(a), t: String(Date.now()) });
-        // replace, чтобы не оставлять страницу оплаты в истории
-        router.replace('/?' + q.toString());
-      }, 1000);
+        openTelegramDeepLink(botName, `paid_${id}_${amt}`);
+      }, 700);
       return () => clearTimeout(t);
     }
-  }, [status, amount, router]);
+
+    // Если по какой-то причине не в Telegram (или NEXT_PUBLIC_BOT_NAME не задан) —
+    // делаем локальный редирект как раньше (хуже, но рабочий запасной путь)
+    const t = setTimeout(() => {
+      const q = new URLSearchParams({ paid: '1', amt: String(amt), t: String(Date.now()) });
+      router.replace('/?' + q.toString());
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [status, amount, id, router]);
 
   function openInside() {
     if (!payUrl) return;
     setOpening(true);
-    const inTelegram = !!(window as any)?.Telegram?.WebApp;
+    const inTelegram = isInTelegram();
     if (inTelegram) {
-      window.location.href = payUrl;
+      window.location.href = payUrl;        // внутри webview
     } else {
-      window.open(payUrl, '_blank', 'noopener,noreferrer');
+      window.open(payUrl, '_blank', 'noopener,noreferrer'); // на ПК — новая вкладка
     }
   }
 
@@ -66,7 +98,7 @@ export default function PayPage() {
       <div className="center">
         <div className="card fade-in">
           <div className="h2">✅ Оплата прошла</div>
-          <div className="sub">Зачислено: {amount} ₽. Возвращаем на главную…</div>
+          <div className="sub">Зачислено: {amount} ₽. Возвращаем в мини-приложение…</div>
         </div>
       </div>
     );
@@ -115,7 +147,6 @@ export default function PayPage() {
                     alert('Симуляция не удалась: ' + (data?.error || res.status));
                     return;
                   }
-                  // принудительно дернём статус
                   const r = await fetch(`/api/pay/status?id=${encodeURIComponent(id)}`, { cache: 'no-store' });
                   const d = await r.json();
                   if (r.ok && d?.ok) {
