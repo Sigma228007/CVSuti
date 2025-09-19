@@ -2,38 +2,86 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 
+function getInitDataFromAnyWhere(): string | null {
+  if (typeof window === 'undefined') return null;
+
+  // 1) Telegram.WebApp.initData
+  try {
+    const tg = (window as any)?.Telegram?.WebApp;
+    if (tg?.initData && String(tg.initData).length > 0) return String(tg.initData);
+  } catch {}
+
+  // 2) ?tgWebAppData / ?initData в query
+  try {
+    const sp = new URLSearchParams(window.location.search);
+    const q =
+      sp.get('tgWebAppData') ||
+      sp.get('initData') ||
+      sp.get('initdata') ||
+      sp.get('init_data');
+    if (q) return q;
+  } catch {}
+
+  // 3) #tgWebAppData / #initData в hash
+  try {
+    const raw = (window.location.hash || '').replace(/^#/, '');
+    if (raw) {
+      const hp = new URLSearchParams(raw);
+      const h =
+        hp.get('tgWebAppData') ||
+        hp.get('initData') ||
+        hp.get('initdata') ||
+        hp.get('init_data');
+      if (h) return h;
+    }
+  } catch {}
+
+  // 4) Эвристики для Telegram Web (iframe)
+  try {
+    // 4a) ancestorOrigins (DOMStringList или что-то похожее)
+    const ao: any = (window.location as any).ancestorOrigins;
+    let fromAncestor = false;
+
+    if (ao && typeof ao.contains === 'function') {
+      // DOMStringList в некоторых браузерах
+      fromAncestor =
+        ao.contains('https://web.telegram.org') || ao.contains('https://t.me');
+    } else if (ao) {
+      // Любой итерируемый список -> массив строк
+      const arr = Array.from(ao as unknown as Iterable<unknown>).map((v) =>
+        String(v)
+      );
+      fromAncestor = arr.some(
+        (o) => o.includes('web.telegram.org') || o.includes('t.me')
+      );
+    }
+
+    // 4b) referrer
+    const ref = document.referrer || '';
+    const fromRef =
+      ref.includes('web.telegram.org') || ref.includes('t.me');
+
+    if (fromAncestor || fromRef) {
+      // пускаем даже без initData — клиент пришлёт его в API-запросах
+      return '__from_iframe__';
+    }
+  } catch {}
+
+  return null;
+}
+
 export default function Guard({ children }: { children: React.ReactNode }) {
   const [ok, setOk] = useState<boolean | null>(null);
 
-  // Пускаем, если есть tg.WebApp.initData ИЛИ initData в URL (tgWebAppData/initData/варианты)
-  const hasInitData = useMemo(() => {
-    try {
-      if (typeof window === 'undefined') return false;
-
-      const tg = (window as any)?.Telegram?.WebApp;
-      const fromTG = tg?.initData && String(tg.initData).length > 0;
-
-      const sp = new URLSearchParams(window.location.search);
-      const fromQuery =
-        sp.get('tgWebAppData') ||
-        sp.get('initData') ||
-        sp.get('initdata') ||
-        sp.get('init_data');
-
-      return Boolean(fromTG || fromQuery);
-    } catch {
-      return false;
-    }
-  }, []);
+  const initData = useMemo(getInitDataFromAnyWhere, []);
 
   useEffect(() => {
-    // Для порядка дернём ready(), если доступен
     try {
       const tg = (window as any)?.Telegram?.WebApp;
       if (tg?.ready) tg.ready();
     } catch {}
-    setOk(hasInitData);
-  }, [hasInitData]);
+    setOk(Boolean(initData));
+  }, [initData]);
 
   if (ok === null) return null;
 
