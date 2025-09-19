@@ -3,24 +3,30 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 
-function isInTelegram(): boolean {
-  try {
-    return !!(window as any)?.Telegram?.WebApp;
-  } catch { return false; }
-}
+function openBotDeepLink(bot: string, payload: string) {
+  const botName = bot.replace(/^@/, '');
+  const link = `https://t.me/${botName}?startapp=${encodeURIComponent(payload)}`;
 
-function openTelegramDeepLink(bot: string, payload: string) {
-  const link = `https://t.me/${bot.replace(/^@/, '')}?startapp=${encodeURIComponent(payload)}`;
   try {
     const tg = (window as any)?.Telegram?.WebApp;
+    // 1) нативный способ
     if (tg?.openTelegramLink) {
       tg.openTelegramLink(link);
-      return true;
+      return;
+    }
+    // 2) иногда помогает обычный openLink
+    if (tg?.openLink) {
+      tg.openLink(link, { try_instant_view: false });
+      return;
     }
   } catch {}
-  // запасной путь
-  window.location.href = link;
-  return true;
+
+  // 3) универсальные запасные пути
+  try {
+    window.location.href = link;
+  } catch {
+    try { window.open(link, '_blank', 'noopener,noreferrer'); } catch {}
+  }
 }
 
 export default function PayPage() {
@@ -35,7 +41,7 @@ export default function PayPage() {
   // URL кассы передаётся из главной: /pay/[id]?url=...
   const payUrl = sp.get('url') || '';
 
-  // подтягиваем статус и сумму, авто-обновление
+  // пуллим статус
   useEffect(() => {
     let stop = false;
     async function tick() {
@@ -53,44 +59,48 @@ export default function PayPage() {
     return () => { stop = true; clearInterval(t); };
   }, [id]);
 
-  // === КЛЮЧЕВОЕ: после approved открываем мини-приложение через deep-link к боту ===
+  // КЛЮЧЕВОЕ: как только видим approved — сразу уводим в бота deep-link'ом
   useEffect(() => {
     if (status !== 'approved') return;
 
-    const botName = (process.env.NEXT_PUBLIC_BOT_NAME || '').trim(); // например @NvutiPointsBot
+    const bot = (process.env.NEXT_PUBLIC_BOT_NAME || '').trim(); // например @NvutiPointsBot
     const amt = amount ?? 0;
 
-    // Внутри Telegram: открываем бота ссылкой, мини-ап запустится с initData
-    if (botName && isInTelegram()) {
-      // небольшая задержка для UX
+    // если бот указан — всегда уходим в Telegram
+    if (bot) {
+      // небольшая задержка, чтобы юзер увидел «Оплата прошла»
       const t = setTimeout(() => {
-        openTelegramDeepLink(botName, `paid_${id}_${amt}`);
-      }, 700);
+        openBotDeepLink(bot, `paid_${id}_${amt}`);
+      }, 600);
       return () => clearTimeout(t);
     }
 
-    // Если по какой-то причине не в Telegram (или NEXT_PUBLIC_BOT_NAME не задан) —
-    // делаем локальный редирект как раньше (хуже, но рабочий запасной путь)
+    // если почему-то не указан бот — старый запасной путь
     const t = setTimeout(() => {
       const q = new URLSearchParams({ paid: '1', amt: String(amt), t: String(Date.now()) });
       router.replace('/?' + q.toString());
-    }, 1000);
+    }, 800);
     return () => clearTimeout(t);
   }, [status, amount, id, router]);
 
   function openInside() {
     if (!payUrl) return;
     setOpening(true);
-    const inTelegram = isInTelegram();
-    if (inTelegram) {
-      window.location.href = payUrl;        // внутри webview
-    } else {
-      window.open(payUrl, '_blank', 'noopener,noreferrer'); // на ПК — новая вкладка
+    const tg = (window as any)?.Telegram?.WebApp;
+    try {
+      if (tg) {
+        // внутри webview открываем URL кассы в этом же контексте
+        window.location.href = payUrl;
+      } else {
+        window.open(payUrl, '_blank', 'noopener,noreferrer'); // ПК/браузер
+      }
+    } catch {
+      window.open(payUrl, '_blank', 'noopener,noreferrer');
     }
   }
 
   if (status === 'loading') {
-    return <div className="center"><div className="card">Загрузка...</div></div>;
+    return <div className="center"><div className="card">Загрузка…</div></div>;
   }
 
   if (status === 'approved') {
@@ -98,7 +108,7 @@ export default function PayPage() {
       <div className="center">
         <div className="card fade-in">
           <div className="h2">✅ Оплата прошла</div>
-          <div className="sub">Зачислено: {amount} ₽. Возвращаем в мини-приложение…</div>
+          <div className="sub">Возвращаем в мини-приложение…</div>
         </div>
       </div>
     );
@@ -111,7 +121,7 @@ export default function PayPage() {
           <div className="h2">❌ Платёж отклонён</div>
           <div className="sub">Если это ошибка — напишите в поддержку.</div>
           <div style={{ marginTop: 12 }}>
-            <button className="btn" onClick={() => router.push('/')}>Назад</button>
+            <button className="btn" onClick={() => router.push('/')}>На главную</button>
           </div>
         </div>
       </div>
@@ -131,6 +141,7 @@ export default function PayPage() {
           {opening ? 'Открываю…' : 'Открыть кассу'}
         </button>
 
+        {/* dev-кнопка — результат такой же: при approved сработает deep-link */}
         {process.env.NEXT_PUBLIC_ALLOW_TEST_PAY === '1' && (
           <div style={{ marginTop: 12 }}>
             <button
@@ -147,6 +158,7 @@ export default function PayPage() {
                     alert('Симуляция не удалась: ' + (data?.error || res.status));
                     return;
                   }
+                  // дергаем статус вручную, чтобы триггернуть approved → deep-link
                   const r = await fetch(`/api/pay/status?id=${encodeURIComponent(id)}`, { cache: 'no-store' });
                   const d = await r.json();
                   if (r.ok && d?.ok) {
