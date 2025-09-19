@@ -20,6 +20,11 @@ function tryOpenExternal(url: string): boolean {
   return false;
 }
 
+function isIOS(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
 export default function Page() {
   return (
     <Suspense fallback={<main style={{ padding: 24 }}>Загрузка…</main>}>
@@ -30,17 +35,20 @@ export default function Page() {
 
 function PageInner() {
   const router = useRouter();
+
   const [amount, setAmount] = useState<number>(500);
   const [loading, setLoading] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
 
-  // диагностика (временно — можно убрать, когда всё ок)
-  const [lastUrl, setLastUrl] = useState<string>('');
+  // состояние инвойса
+  const [invoiceId, setInvoiceId] = useState<string>('');
+  const [invoiceUrl, setInvoiceUrl] = useState<string>('');
+  const [openPromptVisible, setOpenPromptVisible] = useState(false);
   const [lastError, setLastError] = useState<string>('');
 
   const initData = useMemo(() => getInitData(), []);
 
-  // баланс — тянем только в TG
+  // баланс — тянем только в TG (иначе 401)
   useEffect(() => {
     let stop = false;
     async function load() {
@@ -56,7 +64,10 @@ function PageInner() {
     if (!amount || amount <= 0) return;
     setLoading(true);
     setLastError('');
-    setLastUrl('');
+    setOpenPromptVisible(false);
+    setInvoiceId('');
+    setInvoiceUrl('');
+
     try {
       const r = await fetch('/api/fkwallet/invoice', {
         method: 'POST',
@@ -65,27 +76,33 @@ function PageInner() {
       });
 
       let data: any = null;
-      let rawText = '';
-      try { data = await r.json(); } catch { rawText = await r.text().catch(()=> ''); }
+      let raw = '';
+      try { data = await r.json(); } catch { raw = await r.text().catch(()=> ''); }
 
       if (!r.ok || !data?.ok || !data?.url || !data?.id) {
-        const msg = data?.error || rawText || `Server error (${r.status})`;
+        const msg = data?.error || raw || `Server error (${r.status})`;
         setLastError(String(msg));
         alert('Ошибка инвойса: ' + msg);
         return;
       }
 
+      const id = String(data.id);
       const url = String(data.url);
-      const id  = String(data.id);
-      setLastUrl(url);
+      setInvoiceId(id);
+      setInvoiceUrl(url);
 
-      // 1) ОТКРЫВАЕМ кассу СЕЙЧАС (жест клика)
-      tryOpenExternal(url);
+      // --- КЛЮЧЕВОЕ: НЕ уходим на /pay сразу ---
+      // 1) Пробуем авто-открыть (на десктопе часто срабатывает)
+      const autoOpened = tryOpenExternal(url);
 
-      // 2) ДАЁМ 500–800 мс форы iOS/Telegram, чтобы открыть внешний браузер
-      await new Promise((res) => setTimeout(res, 600));
+      // 2) Если iOS/Telegram или авто-открытие не удалось — показываем карточку с кнопкой
+      if (isIOS() || !autoOpened) {
+        setOpenPromptVisible(true);
+        return; // ждём явного клика пользователя
+      }
 
-      // 3) Переходим на экран ожидания (он только пулинг статуса)
+      // 3) Если авто-открытие сработало (например, на ПК) — даём форы и уходим на /pay
+      await new Promise((res) => setTimeout(res, 500));
       router.push(`/pay/${encodeURIComponent(id)}?url=${encodeURIComponent(url)}`);
     } catch (e: any) {
       setLastError(String(e?.message || e));
@@ -95,11 +112,21 @@ function PageInner() {
     }
   }
 
+  async function confirmOpenAndGo() {
+    if (!invoiceUrl || !invoiceId) return;
+    // ЯВНОЕ действие пользователя — гарантированно открывает на iOS/Telegram
+    tryOpenExternal(invoiceUrl);
+    await new Promise((res) => setTimeout(res, 600));
+    setOpenPromptVisible(false);
+    // На экран ожидания — только после явного открытия
+    router.push(`/pay/${encodeURIComponent(invoiceId)}?url=${encodeURIComponent(invoiceUrl)}`);
+  }
+
   return (
     <main style={{ padding: 24, fontFamily: 'Inter, Arial, sans-serif', color: '#e6eef3' }}>
       <h1 style={{ color: '#fff', marginBottom: 16 }}>GVsuti — Пополнение</h1>
 
-      <div style={{ marginTop: 8, background: '#0f1720', padding: 20, borderRadius: 12, maxWidth: 900 }}>
+      <div style={{ marginTop: 8, background: '#0f1720', padding: 20, borderRadius: 12, maxWidth: 900, boxShadow: '0 6px 24px rgba(0,0,0,.25)' }}>
         <div style={{ marginBottom: 12 }}>
           <span style={{ fontSize: 14, background: '#111827', padding: '6px 10px', borderRadius: 8, color: '#93c5fd' }}>
             Баланс: {balance === null ? '— (вне Telegram недоступно)' : `${balance} ₽`}
@@ -123,17 +150,50 @@ function PageInner() {
           {loading ? 'Подготовка…' : 'Оплатить'}
         </button>
 
-        {(lastError || lastUrl) && (
-          <div className="info" style={{ marginTop: 14 }}>
-            {lastError && <div style={{ color: '#f87171', marginBottom: 8 }}>Ошибка: {lastError}</div>}
-            {lastUrl && (
-              <div>
-                Ссылка кассы: <a href={lastUrl} target="_blank" rel="noreferrer" style={{ color: '#93c5fd' }}>{lastUrl}</a>
-                <div style={{ marginTop: 6 }}>
-                  <button className="btn-outline" onClick={()=>tryOpenExternal(lastUrl)}>Открыть кассу вручную</button>
-                </div>
+        {lastError && (
+          <div className="info" style={{ marginTop: 14, color: '#f87171' }}>
+            Ошибка: {lastError}
+          </div>
+        )}
+
+        {/* Карточка-подсказка: нажмите, чтобы открыть кассу (остается до клика) */}
+        {openPromptVisible && invoiceUrl && (
+          <div className="overlay" style={{ background: 'rgba(0,0,0,.45)' }}>
+            <div className="modal">
+              <div className="h2">Открыть страницу оплаты</div>
+              <div className="sub" style={{ marginTop: 6 }}>
+                Нажмите кнопку ниже, чтобы открыть кассу во внешнем браузере.
               </div>
-            )}
+
+              <div style={{ marginTop: 14 }}>
+                <button className="btn" onClick={confirmOpenAndGo}>Открыть страницу оплаты</button>
+              </div>
+
+              <div style={{ marginTop: 10, color: '#9aa9bd' }}>
+                Если не открылось — попробуйте ещё раз:
+                {' '}
+                <a href={invoiceUrl} target="_blank" rel="noreferrer" style={{ color: '#93c5fd' }}>
+                  {invoiceUrl}
+                </a>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <button className="btn-outline" onClick={() => setOpenPromptVisible(false)}>Отмена</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* На всякий случай — мини-блок снизу, если модал закрыли, а ссылку надо открыть снова */}
+        {!openPromptVisible && invoiceUrl && (
+          <div className="info" style={{ marginTop: 14 }}>
+            Ссылка на оплату готова:&nbsp;
+            <a href={invoiceUrl} target="_blank" rel="noreferrer" style={{ color: '#93c5fd' }}>
+              открыть кассу
+            </a>
+            <div style={{ marginTop: 8 }}>
+              <button className="btn-outline" onClick={confirmOpenAndGo}>Открыть и перейти к ожиданию</button>
+            </div>
           </div>
         )}
       </div>
