@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { fetchBalance } from '@/lib/api';
 import { getInitData } from '@/lib/webapp';
 
-function openExternal(url: string) {
+function tryOpenExternal(url: string): boolean {
   try {
     const tg = (window as any)?.Telegram?.WebApp;
     if (tg?.openLink) { tg.openLink(url, { try_instant_view: false }); return true; }
@@ -13,8 +13,7 @@ function openExternal(url: string) {
   try {
     const a = document.createElement('a');
     a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-    document.body.appendChild(a); a.click(); a.remove();
-    return true;
+    document.body.appendChild(a); a.click(); a.remove(); return true;
   } catch {}
   try { window.open(url, '_blank', 'noopener,noreferrer'); return true; } catch {}
   try { window.location.href = url; return true; } catch {}
@@ -35,8 +34,13 @@ function PageInner() {
   const [loading, setLoading] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
 
+  // для диагностики
+  const [lastUrl, setLastUrl] = useState<string>('');
+  const [lastError, setLastError] = useState<string>('');
+
   const initData = useMemo(() => getInitData(), []);
 
+  // баланс — только в TG
   useEffect(() => {
     let stop = false;
     async function load() {
@@ -51,27 +55,43 @@ function PageInner() {
   async function handlePay() {
     if (!amount || amount <= 0) return;
     setLoading(true);
+    setLastError('');
+    setLastUrl('');
     try {
       const r = await fetch('/api/fkwallet/invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Init-Data': initData || '' },
         body: JSON.stringify({ amount, initData }),
       });
-      const data = await r.json();
+
+      // Сначала попытаемся распарсить JSON, но при ошибке — покажем сырой текст
+      let data: any = null;
+      let rawText = '';
+      try { data = await r.json(); }
+      catch { rawText = await r.text().catch(()=>''); }
+
       if (!r.ok || !data?.ok || !data?.url || !data?.id) {
-        throw new Error(data?.error || `Server error (${r.status})`);
+        const msg = data?.error || rawText || `Server error (${r.status})`;
+        setLastError(String(msg));
+        alert('Ошибка инвойса: ' + msg);
+        return;
       }
 
-      // 1) Открываем кассу СЕЙЧАС (жест клика пользователя)
-      openExternal(data.url);
+      const url = String(data.url);
+      const id  = String(data.id);
 
-      // 2) ДАЁМ iOS Telegram время открыть внешний браузер (КРИТИЧЕСКО)
+      // сохраняем в UI (для диагностики)
+      setLastUrl(url);
+
+      // Открываем кассу СЕЙЧАС (жест клика) — и даём форы
+      tryOpenExternal(url);
       await new Promise((res) => setTimeout(res, 600));
 
-      // 3) Только затем уводим на экран ожидания
-      router.push(`/pay/${encodeURIComponent(data.id)}?url=${encodeURIComponent(data.url)}`);
+      // Экран ожидания статуса
+      router.push(`/pay/${encodeURIComponent(id)}?url=${encodeURIComponent(url)}`);
     } catch (e: any) {
-      alert('Ошибка: ' + (e?.message || e));
+      setLastError(String(e?.message || e));
+      alert('Ошибка сети: ' + (e?.message || e));
     } finally {
       setLoading(false);
     }
@@ -81,7 +101,7 @@ function PageInner() {
     <main style={{ padding: 24, fontFamily: 'Inter, Arial, sans-serif', color: '#e6eef3' }}>
       <h1 style={{ color: '#fff', marginBottom: 16 }}>GVsuti — Пополнение</h1>
 
-      <div style={{ marginTop: 8, background: '#0f1720', padding: 20, borderRadius: 12, maxWidth: 900 }}>
+      <div style={{ marginTop: 8, background: '#0f1720', padding: 20, borderRadius: 12, maxWidth: 900, boxShadow: '0 6px 24px rgba(0,0,0,.25)' }}>
         <div style={{ marginBottom: 12 }}>
           <span style={{ fontSize: 14, background: '#111827', padding: '6px 10px', borderRadius: 8, color: '#93c5fd' }}>
             Баланс: {balance === null ? '— (вне Telegram недоступно)' : `${balance} ₽`}
@@ -99,12 +119,26 @@ function PageInner() {
         </p>
 
         <button
-          onClick={handlePay}
-          disabled={loading || !amount || amount <= 0}
+          onClick={handlePay} disabled={loading || !amount || amount <= 0}
           style={{ padding: '12px 18px', background: loading ? '#128a71' : '#19b894', color: '#fff', border: 'none', borderRadius: 10, fontWeight: 600 }}
         >
           {loading ? 'Подготовка…' : 'Оплатить'}
         </button>
+
+        {/* Диагностический блок (пока чиним, можно оставить; потом уберёшь) */}
+        {(lastError || lastUrl) && (
+          <div className="info" style={{ marginTop: 14 }}>
+            {lastError && <div style={{ color: '#f87171', marginBottom: 8 }}>Ошибка: {lastError}</div>}
+            {lastUrl && (
+              <div>
+                Ссылка кассы: <a href={lastUrl} target="_blank" rel="noreferrer" style={{ color: '#93c5fd' }}>{lastUrl}</a>
+                <div style={{ marginTop: 6 }}>
+                  <button className="btn-outline" onClick={()=>tryOpenExternal(lastUrl)}>Открыть кассу вручную</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </main>
   );
