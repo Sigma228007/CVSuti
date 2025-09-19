@@ -1,20 +1,21 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
-import { getInitData } from '@/lib/webapp';
+import React, { useEffect, useState } from 'react';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 
 export default function PayPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
+  const sp = useSearchParams();
+
   const [status, setStatus] = useState<'pending' | 'approved' | 'declined' | 'loading'>('loading');
   const [amount, setAmount] = useState<number | null>(null);
-  const [gotoUrl, setGotoUrl] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
 
-  const initData = useMemo(() => getInitData() || undefined, []);
+  // URL кассы передали из главной: /pay/[id]?url=...
+  const payUrl = sp.get('url') || '';
 
-  // подтянем статус и сумму
+  // подтягиваем статус и сумму, авто-обновление
   useEffect(() => {
     let stop = false;
     async function tick() {
@@ -28,38 +29,22 @@ export default function PayPage() {
       } catch {}
     }
     tick();
-    const t = setInterval(tick, 2500); // авто-обновление
+    const t = setInterval(tick, 2500);
     return () => { stop = true; clearInterval(t); };
   }, [id]);
 
-  // получим ссылку на кассу (один раз)
-  useEffect(() => {
-    (async () => {
-      try {
-        // Мы не знаем сумму здесь → пусть юзер создаёт инвойс с главной.
-        // Но чтобы /pay/[id] открывалось в одиночку, дёрнем старт с суммой из статуса
-        // (если статус уже есть). Если сумма ещё не пришла — подождём.
-        if (amount) {
-          const r = await fetch('/api/pay/start', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ amount, initData }),
-          });
-          const d = await r.json();
-          if (d?.ok && d.id === id) {
-            setGotoUrl(d.url);
-          }
-        }
-      } catch {}
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [amount, id]);
-
   function openInside() {
-    if (!gotoUrl) return;
+    if (!payUrl) return;
     setOpening(true);
-    // Внутри Telegram — остаёмся в том же WebView
-    window.location.href = gotoUrl;
+
+    // если это Telegram WebApp — просто уходим по ссылке в том же webview;
+    // если обычный браузер (ПК) — пусть открывается в новой вкладке.
+    const inTelegram = !!(window as any)?.Telegram?.WebApp;
+    if (inTelegram) {
+      window.location.href = payUrl;
+    } else {
+      window.open(payUrl, '_blank', 'noopener,noreferrer');
+    }
   }
 
   if (status === 'loading') {
@@ -94,16 +79,15 @@ export default function PayPage() {
     );
   }
 
-  // pending
   return (
     <main className="center">
       <div className="card">
         <div className="h2">Оплата {amount ? `${amount} ₽` : ''}</div>
         <div className="sub" style={{ marginBottom: 12 }}>
-          Откройте кассу. После успешной оплаты статус обновится автоматически.
+          Откройте кассу. После оплаты статус обновится автоматически.
         </div>
 
-        <button className="btn" onClick={openInside} disabled={!gotoUrl || opening}>
+        <button className="btn" onClick={openInside} disabled={!payUrl || opening}>
           {opening ? 'Открываю…' : 'Открыть кассу'}
         </button>
 

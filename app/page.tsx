@@ -31,13 +31,13 @@ export default function Page() {
       body: JSON.stringify({ amount, initData }),
     });
     const data = await res.json();
-    if (!res.ok || !data?.ok || !data?.id) {
+    if (!res.ok || !data?.ok || !data?.id || !data?.url) {
       const msg = data?.error || `Server error (${res.status})`;
       alert('Ошибка: ' + msg);
       return;
     }
-    // Переходим на внутреннюю страницу оплаты
-    window.location.href = `/pay/${data.id}`;
+    // Переходим на внутреннюю страницу, передаём ссылку кассы в query
+    window.location.href = `/pay/${data.id}?url=${encodeURIComponent(data.url)}`;
   } catch (e: any) {
     alert('Ошибка сети: ' + (e?.message || e));
   } finally {

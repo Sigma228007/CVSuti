@@ -33,18 +33,17 @@ export async function POST(req: Request) {
     // создаём pending-заявку
     const dep = await createDepositRequest(v.user.id, amt, 'fkwallet', { kind: method || 'fkwallet' });
 
-    // формируем ссылку FK, НО c orderId = dep.id (чтобы колбэк знал, что зачесть)
+    // формируем ссылку FK с orderId = dep.id
     const merchant = process.env.FK_MERCHANT_ID || '';
-    const secret1 = process.env.FK_SECRET_1 || '';
+    const secret1  = process.env.FK_SECRET_1 || '';
     const currency = process.env.CURRENCY || 'RUB';
     if (!merchant || !secret1) {
       return NextResponse.json({ ok: false, error: 'FK config missing' }, { status: 500 });
     }
 
-    const orderId = dep.id; // <-- ключевой момент
+    const orderId = dep.id;
     const sign = md5(`${merchant}:${amt}:${secret1}:${currency}:${orderId}`);
 
-    // собираем параметры
     const params = new URLSearchParams({
       m: String(merchant),
       oa: String(amt),
@@ -54,7 +53,7 @@ export async function POST(req: Request) {
       lang: 'ru',
     });
 
-    // делаем абсолютный URL к нашему прокси /go/fk
+    // абсолютный URL до нашего прокси /go/fk
     const envBase = (process.env.NEXT_PUBLIC_BASE_URL || '').replace(/\/+$/, '');
     const reqUrl = new URL(req.url);
     const host = (req.headers.get('x-forwarded-host') || reqUrl.host);
@@ -63,7 +62,6 @@ export async function POST(req: Request) {
     const baseUrl = envBase || origin;
     const payUrl = `${baseUrl}/go/fk?${params.toString()}`;
 
-    // клиент пойдёт на /pay/[id] и оттуда откроет payUrl внутри WebView
     return NextResponse.json({ ok: true, id: dep.id, url: payUrl, amount: amt });
   } catch (e: any) {
     console.error('pay/start error', e);
