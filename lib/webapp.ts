@@ -4,16 +4,16 @@ declare global {
   }
 }
 
-/** Надёжно достаём initData из Telegram WebApp/Telegram Web. */
+/** Безопасно достаём initData */
 export function getInitData(): string {
-  // 1) Классика: Telegram.WebApp.initData
   try {
-    const tg = (window as any)?.Telegram?.WebApp;
-    if (tg?.initData && String(tg.initData).length > 0) return String(tg.initData);
+    // 1) нативно из Telegram WebApp
+    const tg = (typeof window !== 'undefined') ? window?.Telegram?.WebApp : undefined;
+    if (tg?.initData) return String(tg.initData);
   } catch {}
 
-  // 2) Параметры запроса ?tgWebAppData / ?initData …
   try {
+    // 2) из query (?tgWebAppData=... || ?initData=...)
     const sp = new URLSearchParams(window.location.search);
     const q =
       sp.get('tgWebAppData') ||
@@ -23,19 +23,31 @@ export function getInitData(): string {
     if (q) return q;
   } catch {}
 
-  // 3) Хэш #tgWebAppData / #initData …
   try {
-    const raw = (window.location.hash || '').replace(/^#/, '');
-    if (raw) {
-      const hp = new URLSearchParams(raw);
-      const h =
-        hp.get('tgWebAppData') ||
-        hp.get('initData') ||
-        hp.get('initdata') ||
-        hp.get('init_data');
-      if (h) return h;
-    }
+    // 3) из hash (#tgWebAppData=...)
+    const hp = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
+    const h =
+      hp.get('tgWebAppData') ||
+      hp.get('initData') ||
+      hp.get('initdata') ||
+      hp.get('init_data');
+    if (h) return h;
   } catch {}
 
   return '';
+}
+
+/** Находимся ли мы в Telegram WebView (грубо/надёжно) */
+export function isInTelegram(): boolean {
+  try {
+    if ((window as any)?.Telegram?.WebApp) return true;
+    const ao = (window.location as any).ancestorOrigins as unknown;
+    if (Array.isArray(ao)) {
+      return (ao as string[]).some((o) =>
+        typeof o === 'string' &&
+        (o.includes('web.telegram.org') || o.includes('t.me'))
+      );
+    }
+  } catch {}
+  return false;
 }
