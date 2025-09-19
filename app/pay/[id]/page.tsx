@@ -12,7 +12,7 @@ export default function PayPage() {
   const [amount, setAmount] = useState<number | null>(null);
   const [opening, setOpening] = useState(false);
 
-  // URL кассы передали из главной: /pay/[id]?url=...
+  // URL кассы передаётся из главной: /pay/[id]?url=...
   const payUrl = sp.get('url') || '';
 
   // подтягиваем статус и сумму, авто-обновление
@@ -37,12 +37,12 @@ export default function PayPage() {
     if (!payUrl) return;
     setOpening(true);
 
-    // если это Telegram WebApp — просто уходим по ссылке в том же webview;
-    // если обычный браузер (ПК) — пусть открывается в новой вкладке.
+    // если Telegram WebApp — открываем внутри того же webview
     const inTelegram = !!(window as any)?.Telegram?.WebApp;
     if (inTelegram) {
       window.location.href = payUrl;
     } else {
+      // на ПК — новая вкладка
       window.open(payUrl, '_blank', 'noopener,noreferrer');
     }
   }
@@ -54,7 +54,7 @@ export default function PayPage() {
   if (status === 'approved') {
     return (
       <div className="center">
-        <div className="card">
+        <div className="card fade-in">
           <div className="h2">✅ Оплата прошла</div>
           <div className="sub">Зачислено: {amount} ₽</div>
           <div style={{ marginTop: 12 }}>
@@ -68,7 +68,7 @@ export default function PayPage() {
   if (status === 'declined') {
     return (
       <div className="center">
-        <div className="card">
+        <div className="card fade-in">
           <div className="h2">❌ Платёж отклонён</div>
           <div className="sub">Если это ошибка — напишите в поддержку.</div>
           <div style={{ marginTop: 12 }}>
@@ -79,12 +79,13 @@ export default function PayPage() {
     );
   }
 
+  // pending
   return (
     <main className="center">
-      <div className="card">
+      <div className="card fade-in">
         <div className="h2">Оплата {amount ? `${amount} ₽` : ''}</div>
         <div className="sub" style={{ marginBottom: 12 }}>
-          Откройте кассу. После оплаты статус обновится автоматически.
+          Нажмите «Открыть кассу». После оплаты статус обновится автоматически.
         </div>
 
         <button className="btn" onClick={openInside} disabled={!payUrl || opening}>
