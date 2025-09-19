@@ -29,20 +29,30 @@ export default function PayPage() {
       } catch {}
     }
     tick();
-    const t = setInterval(tick, 2500);
+    const t = setInterval(tick, 2000);
     return () => { stop = true; clearInterval(t); };
   }, [id]);
+
+  // авто-возврат на главную после успешной оплаты (форсим обновление query-параметром)
+  useEffect(() => {
+    if (status === 'approved') {
+      const a = amount ?? 0;
+      const t = setTimeout(() => {
+        const q = new URLSearchParams({ paid: '1', amt: String(a), t: String(Date.now()) });
+        // replace, чтобы не оставлять страницу оплаты в истории
+        router.replace('/?' + q.toString());
+      }, 1000);
+      return () => clearTimeout(t);
+    }
+  }, [status, amount, router]);
 
   function openInside() {
     if (!payUrl) return;
     setOpening(true);
-
-    // если Telegram WebApp — открываем внутри того же webview
     const inTelegram = !!(window as any)?.Telegram?.WebApp;
     if (inTelegram) {
       window.location.href = payUrl;
     } else {
-      // на ПК — новая вкладка
       window.open(payUrl, '_blank', 'noopener,noreferrer');
     }
   }
@@ -56,10 +66,7 @@ export default function PayPage() {
       <div className="center">
         <div className="card fade-in">
           <div className="h2">✅ Оплата прошла</div>
-          <div className="sub">Зачислено: {amount} ₽</div>
-          <div style={{ marginTop: 12 }}>
-            <button className="btn" onClick={() => router.push('/')}>На главную</button>
-          </div>
+          <div className="sub">Зачислено: {amount} ₽. Возвращаем на главную…</div>
         </div>
       </div>
     );
@@ -92,7 +99,6 @@ export default function PayPage() {
           {opening ? 'Открываю…' : 'Открыть кассу'}
         </button>
 
-        {/* Dev-only: кнопка симуляции колбэка FK */}
         {process.env.NEXT_PUBLIC_ALLOW_TEST_PAY === '1' && (
           <div style={{ marginTop: 12 }}>
             <button
@@ -109,14 +115,12 @@ export default function PayPage() {
                     alert('Симуляция не удалась: ' + (data?.error || res.status));
                     return;
                   }
-                  // сразу обновим статус
+                  // принудительно дернём статус
                   const r = await fetch(`/api/pay/status?id=${encodeURIComponent(id)}`, { cache: 'no-store' });
                   const d = await r.json();
                   if (r.ok && d?.ok) {
                     setStatus(d.status);
                     setAmount(d.amount);
-                  } else {
-                    alert('Не удалось получить статус после симуляции');
                   }
                 } catch (e: any) {
                   alert('Ошибка симуляции: ' + (e?.message || e));

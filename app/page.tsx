@@ -3,31 +3,69 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { fetchBalance } from '@/lib/api';
 import { getInitData as getInitDataFromWebapp } from '@/lib/webapp';
+import { useSearchParams, useRouter } from 'next/navigation';
 
 export default function Page() {
   const [amount, setAmount] = useState<number>(500);
   const [loading, setLoading] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
 
+  const sp = useSearchParams();
+  const router = useRouter();
   const initData = useMemo(() => getInitDataFromWebapp() || '', []);
 
+  async function refreshBalanceSafe() {
+    if (!initData) { setBalance(null); return; }
+    try {
+      const b = await fetchBalance();
+      setBalance(b);
+    } catch {
+      setBalance(null);
+    }
+  }
+
+  // первичная загрузка
   useEffect(() => {
-    (async () => {
-      try {
-        const b = await fetchBalance();
-        setBalance(b);
-      } catch {
-        // вне Telegram бэкенд вернёт 401 — просто показываем прочерк
-        setBalance(null);
-      }
-    })();
-  }, []);
+    refreshBalanceSafe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initData]);
+
+  // если вернулись со страницы оплаты с ?paid=1 — обновить баланс и убрать флаг из URL
+  useEffect(() => {
+    const paid = sp.get('paid');
+    if (paid === '1') {
+      refreshBalanceSafe().then(() => {
+        // аккуратно убираем query-параметры, чтобы не мешали дальше
+        const url = new URL(window.location.href);
+        url.searchParams.delete('paid');
+        url.searchParams.delete('amt');
+        url.searchParams.delete('t');
+        router.replace(url.pathname + (url.search ? '?' + url.searchParams.toString() : ''));
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sp]);
+
+  // рефреш при возврате на вкладку / при показе страницы
+  useEffect(() => {
+    function onFocus() { refreshBalanceSafe(); }
+    function onVisible() { if (document.visibilityState === 'visible') refreshBalanceSafe(); }
+
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initData]);
 
   async function handlePay() {
     setLoading(true);
     try {
       if (initData) {
-        // === ТЕЛЕГРАМ: новый флоу (внутренняя страница + авто-обновление статуса) ===
+        // Телеграм: новый флоу
         const res = await fetch('/api/pay/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -39,10 +77,9 @@ export default function Page() {
           alert('Ошибка: ' + msg);
           return;
         }
-        // передаем ссылку кассы в query
         window.location.href = `/pay/${data.id}?url=${encodeURIComponent(data.url)}`;
       } else {
-        // === НЕ ТЕЛЕГРАМ (браузер/ПК): старый флоу — прямой инвойс без initData ===
+        // Браузер/ПК: прямой инвойс
         const res = await fetch('/api/fkwallet/invoice', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -54,13 +91,9 @@ export default function Page() {
           alert('Ошибка: ' + msg);
           return;
         }
-        // на телефоне это будет тот же webview; на ПК откроем в новой вкладке
         const inTelegram = !!(window as any)?.Telegram?.WebApp;
-        if (inTelegram) {
-          window.location.href = data.url;
-        } else {
-          window.open(data.url, '_blank', 'noopener,noreferrer');
-        }
+        if (inTelegram) window.location.href = data.url;
+        else window.open(data.url, '_blank', 'noopener,noreferrer');
       }
     } catch (e: any) {
       alert('Ошибка сети: ' + (e?.message || e));
