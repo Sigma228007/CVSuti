@@ -33,7 +33,6 @@ function PageInner() {
 
   useEffect(() => { refreshBalanceSafe(); }, [initData]);
 
-  // Пополнение через FreeKassa
   async function handlePay() {
     setLoading(true);
     try {
@@ -43,14 +42,13 @@ function PageInner() {
         body: JSON.stringify({ amount, initData }),
       });
       const data = await res.json();
-      if (!res.ok || !data?.ok) {
+      if (!res.ok || !data?.ok || !data?.url || !data?.id) {
         alert('Ошибка: ' + (data?.error || `Server error (${res.status})`));
         return;
       }
 
-      // Переходим на страницу оплаты
-      const id = `dep_${Date.now()}`;
-      router.push(`/pay/${id}?url=${encodeURIComponent(data.url)}`);
+      // теперь используем настоящий id депозита
+      router.push(`/pay/${encodeURIComponent(data.id)}?url=${encodeURIComponent(data.url)}`);
     } catch (e: any) {
       alert('Ошибка сети: ' + (e?.message || e));
     } finally {
@@ -83,7 +81,7 @@ function PageInner() {
             }}
           >
             Баланс:&nbsp;
-            {balance === null ? '— (недоступно вне Telegram)' : `${balance} ₽`}
+            {balance === null ? '— (вне Telegram)' : `${balance} ₽`}
           </span>
         </div>
 
@@ -107,7 +105,7 @@ function PageInner() {
 
         <p style={{ marginTop: 4, marginBottom: 14, color: '#9aa9bd', lineHeight: 1.45 }}>
           Оплата через кассу (FKWallet / FreeKassa). Нажмите «Оплатить» — откроется внешняя
-          страница оплаты. После успешной оплаты баланс обновится автоматически.
+          страница оплаты. После успешной оплаты вернитесь в Telegram — баланс обновится автоматически.
         </p>
 
         <button
