@@ -26,7 +26,7 @@ export default function PayPage() {
 
   const payUrl = sp.get('url') || '';
 
-  // статус депозита
+  // Следим за статусом депозита
   useEffect(() => {
     let stop = false;
     async function tick() {
@@ -44,7 +44,7 @@ export default function PayPage() {
     return () => { stop = true; clearInterval(t); };
   }, [id]);
 
-  // после approved — вернуть в бота
+  // После успешной оплаты возвращаем в бота
   useEffect(() => {
     if (status !== 'approved') return;
 
@@ -52,6 +52,7 @@ export default function PayPage() {
     const amt = amount ?? 0;
 
     if (!bot) {
+      // fallback — остаёмся на сайте
       const timer = setTimeout(() => {
         const q = new URLSearchParams({ paid: '1', amt: String(amt), t: String(Date.now()) });
         router.replace('/?' + q.toString());
@@ -81,7 +82,7 @@ export default function PayPage() {
     return () => clearTimeout(timer);
   }, [status, amount, id, router]);
 
-  // кнопка «Открыть в Telegram» (в рамках user-gesture)
+  // Кнопка "Открыть в Telegram" (fallback)
   function handleOpenBot() {
     const tgLink = manualTg || '';
     const httpsLink = manualHttps || '';
@@ -94,14 +95,14 @@ export default function PayPage() {
     try { window.open(httpsLink, '_blank', 'noopener,noreferrer'); } catch {}
   }
 
-  // открыть кассу — В НЕШНЕМ БРАУЗЕРЕ (как в реальном платеже)
+  // === ГЛАВНОЕ: открываем кассу во внешнем браузере ===
   function openInside() {
     if (!payUrl) return;
     setOpening(true);
     const tg = (window as any)?.Telegram?.WebApp;
     try {
       if (tg?.openLink) {
-        tg.openLink(payUrl, { try_instant_view: false }); // откроет внешний браузер
+        tg.openLink(payUrl, { try_instant_view: false }); // всегда внешний браузер
         return;
       }
     } catch {}
@@ -112,7 +113,6 @@ export default function PayPage() {
     return <div className="center"><div className="card">Загрузка…</div></div>;
   }
 
-  // approved
   if (status === 'approved') {
     return (
       <div className="center">
@@ -139,7 +139,6 @@ export default function PayPage() {
     );
   }
 
-  // declined
   if (status === 'declined') {
     return (
       <div className="center">
