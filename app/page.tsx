@@ -23,52 +23,27 @@ export default function Page() {
   }, []);
 
   async function handlePay() {
-    setLoading(true);
-
-    const tg = (window as any)?.Telegram?.WebApp;
-    const canOpenViaTG = Boolean(tg && typeof tg.openLink === 'function');
-
-    // пред-окно нужно только если мы НЕ внутри Telegram WebApp
-    const popup = !canOpenViaTG && typeof window !== 'undefined'
-      ? window.open('', '_blank')
-      : null;
-
-    try {
-      const res = await fetch('/api/fkwallet/invoice', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount, initData }),
-      });
-      const data = await res.json();
-
-      if (!res.ok || !data?.ok || !data?.url) {
-        const msg = data?.error || `Server error (${res.status})`;
-        alert('Ошибка: ' + msg);
-        if (popup) popup.close();
-        return;
-      }
-
-      const url = String(data.url);
-
-      if (canOpenViaTG) {
-        // Открываем кассу прямо внутри WebApp — без диалога «Открыть?»
-        window.location.href = url;
-        return;
-      }
-
-      if (popup && !popup.closed) {
-        popup.location.href = url;
-        return;
-      }
-
-      window.location.href = url;
-    } catch (e: any) {
-      alert('Ошибка сети: ' + (e?.message || e));
-      if (popup && !popup.closed) popup.close();
-    } finally {
-      setLoading(false);
+  setLoading(true);
+  try {
+    const res = await fetch('/api/pay/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount, initData }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data?.ok || !data?.id) {
+      const msg = data?.error || `Server error (${res.status})`;
+      alert('Ошибка: ' + msg);
+      return;
     }
+    // Переходим на внутреннюю страницу оплаты
+    window.location.href = `/pay/${data.id}`;
+  } catch (e: any) {
+    alert('Ошибка сети: ' + (e?.message || e));
+  } finally {
+    setLoading(false);
   }
+}
 
   const depositDetails =
     (process.env.NEXT_PUBLIC_DEPOSIT_DETAILS || process.env.NEXT_PUBLIC_DEPOSITS_DETAILS || '').toString();
