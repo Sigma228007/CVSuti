@@ -1,24 +1,21 @@
 import { getInitData } from "./webapp";
 
-/** Универсальный POST с автоматической прокладкой initData */
-export async function apiPost<T = any>(
-  url: string,
-  payload: Record<string, any> = {}
-): Promise<T> {
+/** POST с автоматическим X-Init-Data */
+export async function apiPost<T=any>(url: string, payload: Record<string, any> = {}): Promise<T> {
   const initData = getInitData();
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ initData, ...payload }),
+    headers: { "Content-Type": "application/json", "X-Init-Data": initData },
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
+    const text = await res.text().catch(()=> "");
     throw new Error(`${res.status} ${text || res.statusText}`);
   }
   return res.json();
 }
 
-/** GET баланса с initData в заголовке (чтобы не ловить 401) */
+/** GET баланса (X-Init-Data в заголовке) */
 export async function fetchBalance(): Promise<number> {
   const initData = getInitData();
   const res = await fetch(`/api/balance?ts=${Date.now()}`, {
@@ -27,7 +24,7 @@ export async function fetchBalance(): Promise<number> {
     cache: "no-store",
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
+    const text = await res.text().catch(()=> "");
     throw new Error(`${res.status} ${text || res.statusText}`);
   }
   const data = await res.json();

@@ -1,52 +1,31 @@
-declare global {
-  interface Window {
-    Telegram?: any;
-  }
-}
+declare global { interface Window { Telegram?: any } }
 
-/** Безопасно достаём initData */
+/** Достаём initData из всех мест */
 export function getInitData(): string {
+  // 1) нативно из WebApp
+  try { const tg = (window as any)?.Telegram?.WebApp; if (tg?.initData) return String(tg.initData); } catch {}
+  // 2) query (?tgWebAppData / ?initData / …)
   try {
-    // 1) нативно из Telegram WebApp
-    const tg = (typeof window !== 'undefined') ? window?.Telegram?.WebApp : undefined;
-    if (tg?.initData) return String(tg.initData);
-  } catch {}
-
-  try {
-    // 2) из query (?tgWebAppData=... || ?initData=...)
     const sp = new URLSearchParams(window.location.search);
-    const q =
-      sp.get('tgWebAppData') ||
-      sp.get('initData') ||
-      sp.get('initdata') ||
-      sp.get('init_data');
+    const q = sp.get('tgWebAppData') || sp.get('initData') || sp.get('initdata') || sp.get('init_data');
     if (q) return q;
   } catch {}
-
+  // 3) hash (#tgWebAppData=…)
   try {
-    // 3) из hash (#tgWebAppData=...)
-    const hp = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
-    const h =
-      hp.get('tgWebAppData') ||
-      hp.get('initData') ||
-      hp.get('initdata') ||
-      hp.get('init_data');
+    const hp = new URLSearchParams((window.location.hash||'').replace(/^#/, ''));
+    const h = hp.get('tgWebAppData') || hp.get('initData') || hp.get('initdata') || hp.get('init_data');
     if (h) return h;
   } catch {}
-
   return '';
 }
 
-/** Находимся ли мы в Telegram WebView (грубо/надёжно) */
+/** Находимся ли мы внутри Telegram WebView */
 export function isInTelegram(): boolean {
   try {
     if ((window as any)?.Telegram?.WebApp) return true;
     const ao = (window.location as any).ancestorOrigins as unknown;
     if (Array.isArray(ao)) {
-      return (ao as string[]).some((o) =>
-        typeof o === 'string' &&
-        (o.includes('web.telegram.org') || o.includes('t.me'))
-      );
+      return (ao as string[]).some(o => typeof o === 'string' && (o.includes('web.telegram.org') || o.includes('t.me')));
     }
   } catch {}
   return false;
