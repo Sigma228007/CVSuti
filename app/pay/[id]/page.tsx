@@ -6,33 +6,17 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 function openBotDeepLink(bot: string, payload: string) {
   const botName = bot.replace(/^@/, '');
   const link = `https://t.me/${botName}?startapp=${encodeURIComponent(payload)}`;
-
   const tg = (window as any)?.Telegram?.WebApp;
 
-  try {
-    // 1) Нативный способ в мобильных Telegram клиентах
-    if (tg?.openTelegramLink) {
-      tg.openTelegramLink(link);
-      try { tg.close(); } catch {}
-      return;
-    }
-  } catch {}
-
-  try {
-    // 2) Telegram Web: открыть в верхнем окне (выход из iframe)
-    const a = document.createElement('a');
-    a.href = link;
-    a.target = '_top';
-    a.rel = 'noreferrer noopener';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    try { tg?.close(); } catch {}
+  // ✅ единственный «правильный» путь — поручаем навигацию самому Telegram
+  if (tg?.openTelegramLink) {
+    tg.openTelegramLink(link);
+    try { tg.close(); } catch {}
     return;
-  } catch {}
+  }
 
-  try { (window.top || window.parent || window).location.href = link; } catch {}
-  try { window.location.href = link; } catch {}
+  // 🔁 Подстраховка для редких окружений: покажем ссылку пользователю
+  alert('Откройте мини-приложение по ссылке:\n' + link);
 }
 
 export default function PayPage() {
@@ -44,9 +28,10 @@ export default function PayPage() {
   const [amount, setAmount] = useState<number | null>(null);
   const [opening, setOpening] = useState(false);
 
+  // URL кассы передаётся из главной: /pay/[id]?url=...
   const payUrl = sp.get('url') || '';
 
-  // Следим за статусом депозита
+  // Пуллим статус депозита
   useEffect(() => {
     let stop = false;
     async function tick() {
@@ -64,23 +49,23 @@ export default function PayPage() {
     return () => { stop = true; clearInterval(t); };
   }, [id]);
 
-  // === При approved уходим обратно в Telegram ===
+  // После успешной оплаты — вернуть в бота через deep-link
   useEffect(() => {
     if (status !== 'approved') return;
     const bot = (process.env.NEXT_PUBLIC_BOT_NAME || '').trim();
     const amt = amount ?? 0;
 
     if (bot) {
-      const t = setTimeout(() => openBotDeepLink(bot, `paid_${id}_${amt}`), 500);
-      return () => clearTimeout(t);
+      const timer = setTimeout(() => openBotDeepLink(bot, `paid_${id}_${amt}`), 500);
+      return () => clearTimeout(timer);
     }
 
-    // запасной путь
-    const t = setTimeout(() => {
+    // Если бот не задан — мягкий запасной путь (останемся на сайте)
+    const timer = setTimeout(() => {
       const q = new URLSearchParams({ paid: '1', amt: String(amt), t: String(Date.now()) });
       router.replace('/?' + q.toString());
     }, 800);
-    return () => clearTimeout(t);
+    return () => clearTimeout(timer);
   }, [status, amount, id, router]);
 
   function openInside() {
@@ -89,9 +74,11 @@ export default function PayPage() {
     const tg = (window as any)?.Telegram?.WebApp;
     try {
       if (tg) {
-        window.location.href = payUrl; // внутри webview
+        // Внутри Telegram webview открываем кассу в этом же окне
+        window.location.href = payUrl;
       } else {
-        window.open(payUrl, '_blank', 'noopener,noreferrer'); // ПК
+        // ПК/обычный браузер
+        window.open(payUrl, '_blank', 'noopener,noreferrer');
       }
     } catch {
       window.open(payUrl, '_blank', 'noopener,noreferrer');
@@ -120,7 +107,7 @@ export default function PayPage() {
           <div className="h2">❌ Платёж отклонён</div>
           <div className="sub">Если это ошибка — напишите в поддержку.</div>
           <div style={{ marginTop: 12 }}>
-            <button className="btn" onClick={() => router.push('/')}>Назад</button>
+            <button className="btn" onClick={() => router.push('/')}>На главную</button>
           </div>
         </div>
       </div>
