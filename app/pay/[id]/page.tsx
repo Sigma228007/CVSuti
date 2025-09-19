@@ -92,6 +92,42 @@ export default function PayPage() {
           {opening ? 'Открываю…' : 'Открыть кассу'}
         </button>
 
+        {/* Dev-only: кнопка симуляции колбэка FK */}
+        {process.env.NEXT_PUBLIC_ALLOW_TEST_PAY === '1' && (
+          <div style={{ marginTop: 12 }}>
+            <button
+              className="btn-outline"
+              onClick={async () => {
+                try {
+                  const res = await fetch('/api/dev/fk/simulate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id, amount }),
+                  });
+                  const data = await res.json();
+                  if (!res.ok || !data?.ok) {
+                    alert('Симуляция не удалась: ' + (data?.error || res.status));
+                    return;
+                  }
+                  // сразу обновим статус
+                  const r = await fetch(`/api/pay/status?id=${encodeURIComponent(id)}`, { cache: 'no-store' });
+                  const d = await r.json();
+                  if (r.ok && d?.ok) {
+                    setStatus(d.status);
+                    setAmount(d.amount);
+                  } else {
+                    alert('Не удалось получить статус после симуляции');
+                  }
+                } catch (e: any) {
+                  alert('Ошибка симуляции: ' + (e?.message || e));
+                }
+              }}
+            >
+              Симулировать callback FK (dev)
+            </button>
+          </div>
+        )}
+
         <div className="ticker" style={{ marginTop: 16 }}>
           <div>Ожидаем подтверждение оплаты… • страница обновится автоматически • </div>
         </div>
