@@ -1,101 +1,79 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
-function uaLooksLikeTelegram(): boolean {
-  try {
-    const ua = (navigator && navigator.userAgent) ? navigator.userAgent.toLowerCase() : '';
-    // мобильный Telegram содержит "Telegram" (iOS/Android), иногда "tgminiapp"
-    return /telegram|tgminiapp/.test(ua);
-  } catch {
-    return false;
-  }
-}
-
-function getInitDataFromAnyWhere(): string | null {
-  if (typeof window === 'undefined') return null;
-
-  // 1) Telegram.WebApp.initData
+function hasInitData(): boolean {
   try {
     const tg = (window as any)?.Telegram?.WebApp;
-    if (tg?.initData && String(tg.initData).length > 0) return String(tg.initData);
+    if (tg?.initData && String(tg.initData).length > 0) return true;
   } catch {}
-
-  // 2) ?tgWebAppData / ?initData
   try {
     const sp = new URLSearchParams(window.location.search);
-    const q =
-      sp.get('tgWebAppData') ||
-      sp.get('initData') ||
-      sp.get('initdata') ||
-      sp.get('init_data');
-    if (q) return q;
+    if (sp.get('tgWebAppData') || sp.get('initData') || sp.get('initdata') || sp.get('init_data')) return true;
   } catch {}
-
-  // 3) #tgWebAppData / #initData
   try {
     const raw = (window.location.hash || '').replace(/^#/, '');
     if (raw) {
       const hp = new URLSearchParams(raw);
-      const h =
-        hp.get('tgWebAppData') ||
-        hp.get('initData') ||
-        hp.get('initdata') ||
-        hp.get('init_data');
-      if (h) return h;
+      if (hp.get('tgWebAppData') || hp.get('initData') || hp.get('initdata') || hp.get('init_data')) return true;
     }
   } catch {}
+  return false;
+}
 
-  // 4) Эвристики Telegram Web (iframe / переход из t.me)
+function looksLikeTelegram(): boolean {
   try {
-    const ao: any = (window.location as any).ancestorOrigins;
-    let fromAncestor = false;
+    // 1) Наличие объекта Telegram.WebApp
+    if ((window as any)?.Telegram?.WebApp) return true;
 
+    // 2) ancestorOrigins/referrer (Telegram Web / t.me)
+    const ao: any = (window.location as any).ancestorOrigins;
     if (ao && typeof ao.contains === 'function') {
-      fromAncestor =
-        ao.contains('https://web.telegram.org') || ao.contains('https://t.me');
+      if (ao.contains('https://web.telegram.org') || ao.contains('https://t.me')) return true;
     } else if (ao) {
       const arr = Array.from(ao as unknown as Iterable<unknown>).map((v) => String(v));
-      fromAncestor = arr.some((o) => o.includes('web.telegram.org') || o.includes('t.me'));
+      if (arr.some((o) => o.includes('web.telegram.org') || o.includes('t.me'))) return true;
     }
-
     const ref = document.referrer || '';
-    const fromRef = ref.includes('web.telegram.org') || ref.includes('t.me');
+    if (ref.includes('web.telegram.org') || ref.includes('t.me')) return true;
 
-    if (fromAncestor || fromRef) {
-      return '__from_iframe__';
-    }
+    // 3) userAgent (iOS/Android клиенты Telegram/TMA)
+    const ua = (navigator && navigator.userAgent ? navigator.userAgent : '').toLowerCase();
+    if (/telegram|tma|tgminiapp/.test(ua)) return true;
+
+    // 4) Встроенность (Telegram Web открывает мини-апп в iframe)
+    if (window.top !== window.self) return true;
   } catch {}
-
-  return null;
+  return false;
 }
 
 export default function Guard({ children }: { children: React.ReactNode }) {
   const [ok, setOk] = useState<boolean | null>(null);
 
-  const initData = useMemo(getInitDataFromAnyWhere, []);
-
   useEffect(() => {
-    // Телеграм может подставить initData чуть позже — делаем два тика
-    let cancelled = false;
+    let alive = true;
 
-    function decide() {
-      if (cancelled) return;
-      const hasInit = Boolean(getInitDataFromAnyWhere());
-      const looksTG = uaLooksLikeTelegram();
-      // Пропускаем, если есть initData ИЛИ userAgent указывает на Telegram
-      setOk(hasInit || looksTG);
-    }
+    const decide = () => {
+      // Пропускаем, если есть ИЛИ initData, ИЛИ достоверные признаки Telegram
+      const allow = hasInitData() || looksLikeTelegram();
+      if (alive) setOk(allow);
+    };
 
-    try {
-      const tg = (window as any)?.Telegram?.WebApp;
-      if (tg?.ready) tg.ready();
-    } catch {}
+    // дергаем заранее ready(), если есть
+    try { (window as any)?.Telegram?.WebApp?.ready?.(); } catch {}
 
+    // мгновенная проверка + пуллинг 2 сек (каждые 150 мс)
     decide();
-    const t = setTimeout(decide, 100); // маленькая задержка — вдруг initData появится
-    return () => { cancelled = true; clearTimeout(t); };
-  }, [initData]);
+    let n = 0;
+    const timer = setInterval(() => {
+      if (ok === true) { clearInterval(timer); return; }
+      decide();
+      if (++n >= 14) clearInterval(timer); // ~2.1s
+    }, 150);
+
+    return () => { alive = false; clearInterval(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (ok === null) return null;
 
