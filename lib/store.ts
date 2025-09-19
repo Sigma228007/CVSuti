@@ -212,18 +212,6 @@ export type Withdraw = {
 const wdKey = (id: string) => `wd:${id}`;          // JSON заявки на вывод
 const wdPendingZ = `wds:pending`;                  // ZSET id по времени
 
-// JSON-хелперы (у тебя уже есть — можно использовать те же)
-async function setJSON<T>(key: string, value: T): Promise<void> {
-  const c = await redis();
-  await c.set(key, JSON.stringify(value));
-}
-async function getJSON<T>(key: string): Promise<T | null> {
-  const c = await redis();
-  const s = await c.get(key);
-  if (!s) return null;
-  try { return JSON.parse(s) as T; } catch { return null; }
-}
-
 /** Создать заявку на вывод: проверяем баланс, СРАЗУ списываем средства и кладём в pending. */
 export async function createWithdrawRequest(
   userId: number,
@@ -237,7 +225,6 @@ export async function createWithdrawRequest(
   // проверим баланс и спишем (резерв)
   const current = await getBalance(userId);
   if (current < amount) throw new Error("insufficient");
-
   await c.decrBy(`u:${userId}:balance`, amount);
 
   const id = `wd_${Date.now()}_${userId}_${Math.floor(Math.random() * 1e6)}`;
@@ -250,7 +237,8 @@ export async function createWithdrawRequest(
     createdAt: Date.now(),
   };
 
-  await setJSON(wdKey(id), wd);
+  // используем уже существующие setJSON/getJSON из файла
+  await setJSON(wdKey(id), wd as any);
   await c.zAdd(wdPendingZ, [{ score: wd.createdAt, value: id }]);
 
   return wd;
@@ -258,7 +246,7 @@ export async function createWithdrawRequest(
 
 /** Получить вывод по id */
 export async function getWithdraw(id: string): Promise<Withdraw | null> {
-  return getJSON<Withdraw>(wdKey(id));
+  return (await getJSON<Withdraw>(wdKey(id)));
 }
 
 /** Список ожидающих выводов (последние N) */
@@ -271,7 +259,7 @@ export async function listPendingWithdrawals(limit = 50): Promise<Withdraw[]> {
     const w = await getJSON<Withdraw>(wdKey(id));
     if (w) res.push(w);
   }
-  res.sort((a,b)=>b.createdAt - a.createdAt);
+  res.sort((a, b) => b.createdAt - a.createdAt);
   return res;
 }
 
@@ -284,7 +272,8 @@ export async function approveWithdraw(id: string): Promise<Withdraw | null> {
 
   wd.status = "approved";
   wd.approvedAt = Date.now();
-  await setJSON(wdKey(id), wd);
+
+  await setJSON(wdKey(id), wd as any);
   await c.zRem(wdPendingZ, id);
   return wd;
 }
@@ -301,29 +290,26 @@ export async function declineWithdraw(id: string): Promise<Withdraw | null> {
 
   wd.status = "declined";
   wd.declinedAt = Date.now();
-  await setJSON(wdKey(id), wd);
+
+  await setJSON(wdKey(id), wd as any);
   await c.zRem(wdPendingZ, id);
   return wd;
 }
 
 /** История пользователя: последние депозиты и выводы */
-export async function getUserHistory(userId: number, limit = 50): Promise<{
-  deposits: Deposit[];
-  withdrawals: Withdraw[];
-}> {
+export async function getUserHistory(
+  userId: number,
+  limit = 50
+): Promise<{ deposits: Deposit[]; withdrawals: Withdraw[] }> {
   const c = await redis();
 
-  // простая выборка: пробегаемся по pending ZSET + весь ключевой space (для MVP)
-  // Можно хранить отдельные ZSET-ы per-user, но для простоты оставим так.
-  // Скан WD
   const wds: Withdraw[] = [];
-  // Скан DEP
   const deps: Deposit[] = [];
 
-  // Попробуем SCAN по шаблону (медленно для огромных БД, но приемлемо для мини-аппа)
+  // SCAN wd:*
   let cursor = 0;
   do {
-    const [next, keys] = await c.scan(cursor, { MATCH: 'wd:*', COUNT: 500 });
+    const { cursor: next, keys } = await c.scan(cursor, { MATCH: "wd:*", COUNT: 500 } as any);
     cursor = Number(next);
     for (const k of keys) {
       const w = await getJSON<Withdraw>(k);
@@ -331,9 +317,10 @@ export async function getUserHistory(userId: number, limit = 50): Promise<{
     }
   } while (cursor !== 0);
 
+  // SCAN dep:*
   cursor = 0;
   do {
-    const [next, keys] = await c.scan(cursor, { MATCH: 'dep:*', COUNT: 500 });
+    const { cursor: next, keys } = await c.scan(cursor, { MATCH: "dep:*", COUNT: 500 } as any);
     cursor = Number(next);
     for (const k of keys) {
       const d = await getJSON<Deposit>(k);
@@ -341,8 +328,8 @@ export async function getUserHistory(userId: number, limit = 50): Promise<{
     }
   } while (cursor !== 0);
 
-  wds.sort((a,b)=>b.createdAt - a.createdAt);
-  deps.sort((a,b)=>b.createdAt - a.createdAt);
+  wds.sort((a, b) => b.createdAt - a.createdAt);
+  deps.sort((a, b) => b.createdAt - a.createdAt);
 
   return {
     withdrawals: wds.slice(0, limit),
