@@ -2,13 +2,10 @@ import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { verifyInitData } from '@/lib/sign';
 import { createDepositRequest } from '@/lib/store';
-import { getBaseUrl } from '@/lib/config';
 
 type Body = { amount?: number; initData?: string };
 
-function md5(input: string) {
-  return crypto.createHash('md5').update(input).digest('hex');
-}
+function md5(s: string) { return crypto.createHash('md5').update(s).digest('hex'); }
 
 export async function POST(req: Request) {
   try {
@@ -19,13 +16,13 @@ export async function POST(req: Request) {
     }
 
     const merchant = process.env.FK_MERCHANT_ID || '';
-    const secret1 = process.env.FK_SECRET_1 || '';
+    const secret1  = process.env.FK_SECRET_1 || '';
     const currency = process.env.CURRENCY || 'RUB';
     if (!merchant || !secret1) {
       return NextResponse.json({ ok: false, error: 'FK config missing' }, { status: 500 });
     }
 
-    // Определяем userId из initData (если запущено в Telegram)
+    // userId из initData (если WebApp)
     let userId = 0;
     try {
       const bot = process.env.BOT_TOKEN || '';
@@ -35,36 +32,28 @@ export async function POST(req: Request) {
       }
     } catch {}
 
-    // 1) создаём запись депозита (pending)
+    // 1) создаём pending-депозит
     const dep = await createDepositRequest(userId, Math.floor(amount), 'fkwallet', null);
 
-    // 2) orderId = id депозита (чтобы мы могли связать callback/статусы)
+    // 2) orderId = dep.id (так callback сможет найти запись)
     const orderId = dep.id;
+    const sign = md5(`${merchant}:${dep.amount}:${secret1}:${currency}:${orderId}`);
 
-    // 3) подпись FreeKassa для формы: md5(merchant:amount:secret1:currency:orderId)
-    const sign = md5(`${merchant}:${amount}:${secret1}:${currency}:${orderId}`);
-
-    // 4) формируем ссылку на оплату
-    //  - success URL задаётся в кабинете FK (если нужно – можно сделать отдельными страницами /fk/success и /fk/error)
+    // 3) ссылка FreeKassa
     const params = new URLSearchParams({
       m: String(merchant),
-      oa: String(amount),
+      oa: String(dep.amount),
       o: String(orderId),
       s: sign,
-      currency: currency,
+      currency,
       lang: 'ru',
-      // дополнительные параметры (попадут в callback FK)
       us_dep: orderId,
       ...(userId ? { us_uid: String(userId) } : {}),
     });
+    const url = 'https://pay.freekassa.com/?' + params.toString();
 
-    const base = 'https://pay.freekassa.com/'; // или https://pay.fk.money/ — в зависимости от кабинета
-    const url = base + '?' + params.toString();
-
-    // 5) возвращаем и ссылку, и id депозита
     return NextResponse.json({ ok: true, url, id: dep.id });
   } catch (err: any) {
-    console.error('invoice error', err);
     return NextResponse.json({ ok: false, error: err?.message || 'internal' }, { status: 500 });
   }
 }
