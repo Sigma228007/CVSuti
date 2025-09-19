@@ -1,18 +1,39 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 export default function Guard({ children }: { children: React.ReactNode }) {
   const [ok, setOk] = useState<boolean | null>(null);
 
-  useEffect(() => {
+  // Пускаем, если есть tg.WebApp.initData ИЛИ initData в URL (tgWebAppData/initData/варианты)
+  const hasInitData = useMemo(() => {
     try {
+      if (typeof window === 'undefined') return false;
+
       const tg = (window as any)?.Telegram?.WebApp;
-      setOk(Boolean(tg?.initData));
+      const fromTG = tg?.initData && String(tg.initData).length > 0;
+
+      const sp = new URLSearchParams(window.location.search);
+      const fromQuery =
+        sp.get('tgWebAppData') ||
+        sp.get('initData') ||
+        sp.get('initdata') ||
+        sp.get('init_data');
+
+      return Boolean(fromTG || fromQuery);
     } catch {
-      setOk(false);
+      return false;
     }
   }, []);
+
+  useEffect(() => {
+    // Для порядка дернём ready(), если доступен
+    try {
+      const tg = (window as any)?.Telegram?.WebApp;
+      if (tg?.ready) tg.ready();
+    } catch {}
+    setOk(hasInitData);
+  }, [hasInitData]);
 
   if (ok === null) return null;
 
