@@ -1,18 +1,18 @@
 'use client';
-
 import React from 'react';
 
-export default function FkSuccessPage() {
+export default function SuccessPage() {
+  // Просто страница «спасибо». Никакой логики — начисление делает callback.
   return (
-    <main className="center" style={{ padding: 24 }}>
-      <div className="card fade-in" style={{ maxWidth: 560, textAlign: 'center' }}>
-        <div className="h2">✅ Платёж принят</div>
-        <p className="sub" style={{ marginTop: 6 }}>
-          Спасибо! Можете закрыть эту страницу и вернуться в Telegram.
+    <main className="center">
+      <div className="card fade-in" style={{ maxWidth: 520 }}>
+        <div className="h2">✅ Оплата прошла</div>
+        <p className="sub" style={{ marginTop: 8 }}>
+          Спасибо! Можете закрыть эту вкладку.
         </p>
-        <p className="sub" style={{ marginTop: 10 }}>
-          В боте появится сообщение о зачислении. Если его нет — откройте мини-приложение заново.
-        </p>
+        <div style={{ marginTop: 12 }}>
+          <a className="btn-outline" href="javascript:window.close()">Закрыть</a>
+        </div>
       </div>
     </main>
   );
