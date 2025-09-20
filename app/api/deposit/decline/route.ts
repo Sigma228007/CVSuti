@@ -11,23 +11,24 @@ export async function GET(req: NextRequest) {
     }
 
     const url = new URL(req.url);
-    const res = verifyAdminLink(url.searchParams.toString(), key);
-    const payload: any =
-      res && typeof res === "object" && "ok" in res ? (res as any).ok ? (res as any).payload : null : res;
+    const token = url.searchParams.get("sig") || "";
+    const id    = url.searchParams.get("id")  || "";
 
-    if (!payload || !payload.id || !payload.userId || !payload.amount) {
+    if (!token || !id) {
       return NextResponse.json({ ok: false, error: "bad_params" }, { status: 400 });
     }
 
-    const dep = await getDeposit(payload.id);
-    if (!dep) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
-    if (dep.status !== "pending") return NextResponse.json({ ok: false, error: "not_pending" }, { status: 400 });
-
-    if (dep.userId !== payload.userId || dep.amount !== payload.amount) {
-      return NextResponse.json({ ok: false, error: "mismatch" }, { status: 400 });
+    const dep = await getDeposit(id);
+    if (!dep || dep.status !== "pending") {
+      return NextResponse.json({ ok: false, error: "not_pending" }, { status: 400 });
     }
 
-    await declineDeposit(dep.id);
+    const v = verifyAdminLink(token, key);
+    if (!("ok" in v) || !v.ok || v.payload?.id !== dep.id) {
+      return NextResponse.json({ ok: false, error: "bad_sig" }, { status: 400 });
+    }
+
+    await declineDeposit(dep);
 
     try { await notifyUserDepositDeclined({ userId: dep.userId, amount: dep.amount }); } catch {}
 

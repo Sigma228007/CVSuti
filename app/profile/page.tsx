@@ -1,206 +1,110 @@
-'use client';
+"use client";
 
-import React, { useEffect, useMemo, useState, Suspense } from 'react';
-import { apiPost } from '@/lib/api';
-import { getInitData } from '@/lib/webapp';
+import React, { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
-type Deposit = {
-  id: string;
-  userId: number;
-  amount: number;
-  method: 'card' | 'fkwallet';
-  status: 'pending' | 'approved' | 'declined';
-  createdAt: number;
-  approvedAt?: number;
-  declinedAt?: number;
-  meta?: any;
-};
-type Withdraw = {
-  id: string;
-  userId: number;
-  amount: number;
-  details?: any;
-  status: 'pending' | 'approved' | 'declined';
-  createdAt: number;
-  approvedAt?: number;
-  declinedAt?: number;
+type HistDeposit = { id: string; amount: number; status: string; ts?: number; provider?: string };
+type HistWithdraw = { id: string; amount: number; status: string; ts?: number; details?: any };
+type UserHistory = {
+  deposits: HistDeposit[];
+  withdrawals: HistWithdraw[];
+  pending: (HistDeposit | HistWithdraw)[];
+  totals?: { dep: number; wd: number; net: number; games?: number; wins?: number };
 };
 
-function fmtDate(ts?: number) {
-  if (!ts) return '—';
-  try { return new Date(ts).toLocaleString(); } catch { return '—'; }
+function getInitData(): string {
+  try {
+    // @ts-ignore
+    const tg = window?.Telegram?.WebApp;
+    if (tg?.initData) return tg.initData as string;
+  } catch {}
+  try {
+    const p = new URLSearchParams(window.location.search);
+    return p.get("tgWebAppData") || p.get("initData") || "";
+  } catch {}
+  return "";
 }
-function StatusBadge({ s }: { s: 'pending'|'approved'|'declined'}) {
-  if (s === 'approved') return <span className="badge chip ok">✅ Выполнено</span>;
-  if (s === 'declined') return <span className="badge chip warn">❌ Отклонено</span>;
-  return <span className="badge">⏳ В ожидании</span>;
+
+function formatRub(n: number) {
+  return Number(n || 0).toFixed(2).replace(".", ",") + " ₽";
 }
 
 export default function ProfilePage() {
-  return (
-    <Suspense fallback={<main className="container"><div className="card">Загрузка профиля…</div></main>}>
-      <ProfileInner />
-    </Suspense>
-  );
-}
-
-function ProfileInner() {
+  const router = useRouter();
   const initData = useMemo(() => getInitData(), []);
-  const [deposits, setDeposits] = useState<Deposit[]>([]);
-  const [withdraws, setWithdraws] = useState<Withdraw[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<'deposits'|'withdraws'>('deposits');
+  const [tab, setTab] = useState<"dep" | "wd" | "pend">("dep");
+  const [hist, setHist] = useState<UserHistory | null>(null);
 
-  const PAGE = 20;
-  const [showDep, setShowDep] = useState(PAGE);
-  const [showWdr, setShowWdr] = useState(PAGE);
+  async function loadHist() {
+    try {
+      const res = await fetch(`/api/user/history?ts=${Date.now()}`, {
+        headers: { "X-Init-Data": initData },
+        cache: "no-store",
+      });
+      const j = await res.json();
+      if (res.ok && j?.ok) setHist(j);
+    } catch {}
+  }
 
   useEffect(() => {
-    let stop = false;
-    async function load() {
-      if (!initData) return;
-      setLoading(true);
-      try {
-        const res = await apiPost<{ ok: boolean; deposits: Deposit[]; withdrawals: Withdraw[] }>(
-          '/api/user/history',
-          { initData, limit: 10000 }
-        );
-        if (!stop && res?.ok) {
-          setDeposits([...(res.deposits||[])].sort((a,b)=>b.createdAt-a.createdAt));
-          setWithdraws([...(res.withdrawals||[])].sort((a,b)=>b.createdAt-a.createdAt));
-        }
-      } finally {
-        if (!stop) setLoading(false);
-      }
-    }
-    load();
-    const t = setInterval(load, 20000);
-    return () => { stop = true; clearInterval(t); };
+    loadHist();
+    const t = setInterval(loadHist, 5000);
+    return () => clearInterval(t);
   }, [initData]);
 
-  const stats = React.useMemo(() => {
-    const sum = (arr:{amount:number}[]) => arr.reduce((s,x)=>s+Number(x.amount||0),0);
-    const depApproved = deposits.filter(d=>d.status==='approved');
-    const wdApproved  = withdraws.filter(w=>w.status==='approved');
-    return {
-      totalIn: sum(depApproved),
-      totalOut: sum(wdApproved),
-      net: sum(depApproved) - sum(wdApproved),
-      depPending: deposits.filter(d=>d.status==='pending').length,
-      wdPending: withdraws.filter(w=>w.status==='pending').length,
-    };
-  }, [deposits, withdraws]);
-
-  function CardStat({ title, value, sub }: { title: string; value: string; sub?: string }) {
-    return (
-      <div className="card lift" style={{ padding: 16 }}>
-        <div className="sub" style={{ marginBottom: 6 }}>{title}</div>
-        <div className="h2" style={{ margin: 0 }}>{value}</div>
-        {sub && <div className="sub" style={{ marginTop: 6 }}>{sub}</div>}
-      </div>
-    );
-  }
+  const list = tab === "dep" ? hist?.deposits : tab === "wd" ? hist?.withdrawals : hist?.pending;
 
   return (
     <main className="container">
       <div className="row between header">
         <div className="h1">Профиль</div>
-        <a className="btn-outline" href="/" style={{ textDecoration:'none' }}>← На главную</a>
+        <button className="btn-outline" onClick={() => router.push("/")}>На главную</button>
       </div>
 
-      <section className="grid" style={{ gridTemplateColumns:'1fr', gap:12 }}>
-        <div className="grid" style={{ gap:12 }}>
-          <CardStat title="Всего пополнено" value={`${stats.totalIn} ₽`} />
-          <CardStat title="Всего выведено" value={`${stats.totalOut} ₽`} />
-        </div>
-        <div className="grid" style={{ gap:12 }}>
-          <CardStat title="Чистый итог" value={`${stats.net>=0?'+':''}${stats.net} ₽`} />
-          <CardStat title="Ожидают подтверждения" value={`${stats.depPending+stats.wdPending}`} sub={`пополнений: ${stats.depPending} • выводов: ${stats.wdPending}`} />
-        </div>
-      </section>
-
-      <section className="card" style={{ marginTop:16 }}>
-        <div className="row wrap" style={{ gap:8, marginBottom:12 }}>
-          <button
-            className="chip"
-            onClick={()=>setTab('deposits')}
-            style={{ borderColor: tab==='deposits' ? '#60a5fa' : 'rgba(148,163,184,.25)', background: tab==='deposits' ? 'rgba(96,165,250,.15)' : 'rgba(148,163,184,.12)' }}
-          >
-            Пополнения ({deposits.length})
-          </button>
-          <button
-            className="chip"
-            onClick={()=>setTab('withdraws')}
-            style={{ borderColor: tab==='withdraws' ? '#60a5fa' : 'rgba(148,163,184,.25)', background: tab==='withdraws' ? 'rgba(96,165,250,.15)' : 'rgba(148,163,184,.12)' }}
-          >
-            Выводы ({withdraws.length})
-          </button>
-          <div className="sub" style={{ marginLeft:'auto' }}>{loading ? 'Обновляем…' : 'Актуально'}</div>
+      <div className="grid">
+        <div className="card">
+          <div className="h2">Статистика</div>
+          <ul className="list">
+            <li className="row between"><span className="sub">Всего пополнено</span><b>{formatRub(hist?.totals?.dep || 0)}</b></li>
+            <li className="row between"><span className="sub">Всего выведено</span><b>{formatRub(hist?.totals?.wd || 0)}</b></li>
+            <li className="row between"><span className="sub">Чистый результат</span><b>{formatRub(hist?.totals?.net || 0)}</b></li>
+            <li className="row between"><span className="sub">Сыграно игр</span><b>{hist?.totals?.games ?? 0}</b></li>
+            <li className="row between"><span className="sub">Побед</span><b>{hist?.totals?.wins ?? 0}</b></li>
+          </ul>
         </div>
 
-        {tab==='deposits' ? (
-          <>
-            {deposits.length===0 && <div className="sub">Нет пополнений</div>}
-            <div className="grid" style={{ gap:12, gridTemplateColumns:'1fr' }}>
-              {deposits.slice(0, showDep).map(d=>(
-                <div key={d.id} className="card">
-                  <div className="row between wrap">
-                    <div className="h2" style={{ fontSize:16 }}>
-                      +{d.amount} ₽ <span className="sub">• {d.method==='fkwallet'?'FKWallet':'Карта'}</span>
-                    </div>
-                    <StatusBadge s={d.status} />
+        <div className="card">
+          <div className="row gap8" style={{ marginBottom: 10 }}>
+            <button className={`chip ${tab === "dep" ? "ok" : ""}`} onClick={() => setTab("dep")}>Пополнения</button>
+            <button className={`chip ${tab === "wd" ? "ok" : ""}`} onClick={() => setTab("wd")}>Выводы</button>
+            <button className={`chip ${tab === "pend" ? "ok" : ""}`} onClick={() => setTab("pend")}>Ожидают</button>
+          </div>
+
+          <ul className="list">
+            {(!list || list.length === 0) && <li className="sub">Пока пусто.</li>}
+            {list?.map((r: any) => (
+              <li key={r.id} className="row between">
+                <div className="sub">
+                  <div><b>{r.id}</b></div>
+                  <div style={{ opacity: 0.8 }}>
+                    {("provider" in r && r.provider) ? `Источник: ${r.provider}` : null}
+                    {("details" in r && r.details) ? `Реквизиты: ${typeof r.details === "string" ? r.details : JSON.stringify(r.details)}` : null}
                   </div>
-                  <div className="sub" style={{ marginTop:6 }}>{fmtDate(d.createdAt)}</div>
                 </div>
-              ))}
-            </div>
-            {showDep<deposits.length && (
-              <div style={{ marginTop:12 }}>
-                <button className="btn-outline" onClick={()=>setShowDep(s=>s+PAGE)}>Показать ещё</button>
-              </div>
-            )}
-          </>
-        ) : (
-          <>
-            {withdraws.length===0 && <div className="sub">Нет выводов</div>}
-            <div className="grid" style={{ gap:12, gridTemplateColumns:'1fr' }}>
-              {withdraws.slice(0, showWdr).map(w=>(
-                <div key={w.id} className="card">
-                  <div className="row between wrap">
-                    <div className="h2" style={{ fontSize:16 }}>
-                      -{w.amount} ₽ <span className="sub">• {w.details ? 'реквизиты указаны' : 'реквизиты —'}</span>
-                    </div>
-                    <StatusBadge s={w.status} />
-                  </div>
-                  <div className="sub" style={{ marginTop:6 }}>{fmtDate(w.createdAt)}</div>
+                <div style={{ textAlign: "right" }}>
+                  <div><b>{formatRub(r.amount || 0)}</b></div>
+                  <div className={`chip ${r.status === "approved" ? "ok" : r.status === "pending" ? "" : "warn"}`}>{r.status}</div>
                 </div>
-              ))}
-            </div>
-            {showWdr<withdraws.length && (
-              <div style={{ marginTop:12 }}>
-                <button className="btn-outline" onClick={()=>setShowWdr(s=>s+PAGE)}>Показать ещё</button>
-              </div>
-            )}
-          </>
-        )}
-      </section>
-
-      <div className="ticker">
-        <div>История обновляется автоматически раз в 20 секунд • Переключайся между вкладками выше • </div>
+              </li>
+            ))}
+          </ul>
+        </div>
       </div>
 
-      <style jsx>{`
-        @media (min-width: 900px){
-          section.grid:first-of-type{
-            grid-template-columns: 1fr 1fr;
-          }
-        }
-        @media (min-width: 1200px){
-          section.card .grid{
-            grid-template-columns: 1fr 1fr;
-          }
-        }
-      `}</style>
+      <div className="card" style={{ marginTop: 12 }}>
+        <div className="h2">Поддержка</div>
+        <div className="sub">Напиши админу: <a href={`https://t.me/${(process.env.NEXT_PUBLIC_BOT_NAME || "").replace("@","")}`} target="_blank">через бота</a></div>
+      </div>
     </main>
   );
 }

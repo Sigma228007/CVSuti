@@ -1,65 +1,42 @@
-'use client';
+"use client";
+import React, { useEffect, useMemo, useState } from "react";
+import { usePathname } from "next/navigation";
 
-import React, { useEffect, useMemo, useState } from 'react';
-
-function getInitDataFromAnywhere(): string | null {
-  // 1) querystring ?initData=...
-  try {
-    const sp = new URLSearchParams(window.location.search);
-    if (sp.get('tgWebAppData')) return sp.get('tgWebAppData')!;
-    if (sp.get('initdata')) return sp.get('initdata')!;
-    if (sp.get('init_data')) return sp.get('init_data')!;
-    if (sp.get('initData')) return sp.get('initData')!;
-  } catch {}
-
-  // 2) hash #initData=...
-  try {
-    const raw = (window.location.hash || '').replace(/^#/, '');
-    const hp = new URLSearchParams(raw);
-    if (hp.get('tgWebAppData')) return hp.get('tgWebAppData')!;
-    if (hp.get('initdata')) return hp.get('initdata')!;
-    if (hp.get('init_data')) return hp.get('init_data')!;
-    if (hp.get('initData')) return hp.get('initData')!;
-  } catch {}
-
-  // 3) эвристика: если в iframe телеграма — позволяем без initData
-  try {
-    const ao = (window.location as any)?.ancestorOrigins as unknown as string[] | undefined;
-    const list = ao ? (Array.from(ao) as string[]) : [];
-    if (list.some((o) => o.includes('web.telegram.org') || o.includes('t.me'))) {
-      // пускаем даже без initData — клиент пришлёт его в запросах к API
-      return '__from_iframe__';
-    }
-  } catch {}
-
-  return null;
-}
+const ALLOW_OUTSIDE = [/^\/pay(\/|$)/i, /^\/fk(\/|$)/i];
 
 export default function Guard({ children }: { children: React.ReactNode }) {
-  const [ok, setOk] = useState<boolean | null>(null);
-
-  const initData = useMemo(getInitDataFromAnywhere, []);
+  const pathname = usePathname() || "/";
+  const [ready, setReady] = useState(false);
+  const inTelegram = useMemo(() => {
+    try { return Boolean((window as any)?.Telegram?.WebApp?.initData); } catch { return false; }
+  }, []);
 
   useEffect(() => {
-    try {
-      const tg = (window as any)?.Telegram?.WebApp;
-      if (tg?.ready) tg.ready();
-    } catch {}
-    setOk(Boolean(initData));
-  }, [initData]);
+    // если реально запущены в Telegram — навсегда помечаем устройство как «пропущенное»
+    if (inTelegram) {
+      try { localStorage.setItem("tg_authed_once", "1"); } catch {}
+    }
+    setReady(true);
+  }, [inTelegram]);
 
-  if (ok === null) return null;
+  const allowedByPath = ALLOW_OUTSIDE.some((re) => re.test(pathname));
+  let authedOnce = false;
+  try { authedOnce = localStorage.getItem("tg_authed_once") === "1"; } catch {}
 
-  if (!ok) {
-    return (
-      <div className="center">
-        <div className="card fade-in" style={{ textAlign: 'center', maxWidth: 420 }}>
-          <div className="h2">Доступ только из Telegram</div>
-          <div className="sub">Откройте мини-приложение через нашего бота.</div>
-        </div>
-      </div>
-    );
+  if (!ready) return null;
+
+  if (inTelegram || authedOnce || allowedByPath) {
+    return <>{children}</>;
   }
 
-  return <>{children}</>;
+  return (
+    <main className="center">
+      <div className="card">
+        <div className="h2">Доступ только через Telegram</div>
+        <div className="sub" style={{ marginTop: 6 }}>
+          Открой мини-приложение через нашего бота. После первого входа ограничения снимаются, чтобы не мешать оплате.
+        </div>
+      </div>
+    </main>
+  );
 }
