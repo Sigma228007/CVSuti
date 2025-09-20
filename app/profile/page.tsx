@@ -28,10 +28,7 @@ type Withdraw = {
 
 function fmtDate(ts?: number) {
   if (!ts) return '—';
-  try {
-    const d = new Date(ts);
-    return d.toLocaleString();
-  } catch { return '—'; }
+  try { return new Date(ts).toLocaleString(); } catch { return '—'; }
 }
 function StatusBadge({ s }: { s: 'pending'|'approved'|'declined'}) {
   if (s === 'approved') return <span className="badge chip ok">✅ Выполнено</span>;
@@ -54,7 +51,6 @@ function ProfileInner() {
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<'deposits'|'withdraws'>('deposits');
 
-  // пагинация на клиенте
   const PAGE = 20;
   const [showDep, setShowDep] = useState(PAGE);
   const [showWdr, setShowWdr] = useState(PAGE);
@@ -67,49 +63,31 @@ function ProfileInner() {
       try {
         const res = await apiPost<{ ok: boolean; deposits: Deposit[]; withdrawals: Withdraw[] }>(
           '/api/user/history',
-          { initData, limit: 10000 } // берём “всё” с сервера
+          { initData, limit: 10000 }
         );
         if (!stop && res?.ok) {
-          // Отсортируем (на всякий случай) по createdAt убыванию
-          const deps = [...(res.deposits || [])].sort((a,b)=>b.createdAt - a.createdAt);
-          const wds  = [...(res.withdrawals || [])].sort((a,b)=>b.createdAt - a.createdAt);
-          setDeposits(deps);
-          setWithdraws(wds);
+          setDeposits([...(res.deposits||[])].sort((a,b)=>b.createdAt-a.createdAt));
+          setWithdraws([...(res.withdrawals||[])].sort((a,b)=>b.createdAt-a.createdAt));
         }
-      } catch {
       } finally {
         if (!stop) setLoading(false);
       }
     }
     load();
-    // автообновление раз в 20 cек
     const t = setInterval(load, 20000);
     return () => { stop = true; clearInterval(t); };
   }, [initData]);
 
-  // статистика
-  const stats = useMemo(() => {
+  const stats = React.useMemo(() => {
+    const sum = (arr:{amount:number}[]) => arr.reduce((s,x)=>s+Number(x.amount||0),0);
     const depApproved = deposits.filter(d=>d.status==='approved');
-    const depPending  = deposits.filter(d=>d.status==='pending');
-    const depDeclined = deposits.filter(d=>d.status==='declined');
     const wdApproved  = withdraws.filter(w=>w.status==='approved');
-    const wdPending   = withdraws.filter(w=>w.status==='pending');
-    const wdDeclined  = withdraws.filter(w=>w.status==='declined');
-
-    const sum = (arr:{amount:number}[]) => arr.reduce((s,x)=>s+Number(x.amount||0), 0);
-
-    const totalIn  = sum(depApproved);
-    const totalOut = sum(wdApproved);
-    const net      = totalIn - totalOut;
-
     return {
-      totalIn, totalOut, net,
-      depCount: deposits.length,
-      wdCount: withdraws.length,
-      depPending: depPending.length,
-      wdPending: wdPending.length,
-      depDeclined: depDeclined.length,
-      wdDeclined: wdDeclined.length,
+      totalIn: sum(depApproved),
+      totalOut: sum(wdApproved),
+      net: sum(depApproved) - sum(wdApproved),
+      depPending: deposits.filter(d=>d.status==='pending').length,
+      wdPending: withdraws.filter(w=>w.status==='pending').length,
     };
   }, [deposits, withdraws]);
 
@@ -127,24 +105,22 @@ function ProfileInner() {
     <main className="container">
       <div className="row between header">
         <div className="h1">Профиль</div>
-        <a className="btn-outline" href="/" style={{ textDecoration: 'none' }}>← На главную</a>
+        <a className="btn-outline" href="/" style={{ textDecoration:'none' }}>← На главную</a>
       </div>
 
-      {/* Сводка: адаптивная сетка */}
-      <section className="grid" style={{ gridTemplateColumns: '1fr', gap: 12 }}>
-        <div className="grid" style={{ gap: 12 }}>
-          <CardStat title="Всего пополнено" value={`${stats.totalIn} ₽`} sub={`успешных операций: ${deposits.filter(d=>d.status==='approved').length}`} />
-          <CardStat title="Всего выведено" value={`${stats.totalOut} ₽`} sub={`успешных операций: ${withdraws.filter(w=>w.status==='approved').length}`} />
+      <section className="grid" style={{ gridTemplateColumns:'1fr', gap:12 }}>
+        <div className="grid" style={{ gap:12 }}>
+          <CardStat title="Всего пополнено" value={`${stats.totalIn} ₽`} />
+          <CardStat title="Всего выведено" value={`${stats.totalOut} ₽`} />
         </div>
-        <div className="grid" style={{ gap: 12 }}>
-          <CardStat title="Чистый итог" value={`${stats.net >= 0 ? '+' : ''}${stats.net} ₽`} />
-          <CardStat title="Ожидают подтверждения" value={`${stats.depPending + stats.wdPending}`} sub={`пополнений: ${stats.depPending} • выводов: ${stats.wdPending}`} />
+        <div className="grid" style={{ gap:12 }}>
+          <CardStat title="Чистый итог" value={`${stats.net>=0?'+':''}${stats.net} ₽`} />
+          <CardStat title="Ожидают подтверждения" value={`${stats.depPending+stats.wdPending}`} sub={`пополнений: ${stats.depPending} • выводов: ${stats.wdPending}`} />
         </div>
       </section>
 
-      {/* Табы */}
-      <section className="card" style={{ marginTop: 16 }}>
-        <div className="row wrap" style={{ gap: 8, marginBottom: 12 }}>
+      <section className="card" style={{ marginTop:16 }}>
+        <div className="row wrap" style={{ gap:8, marginBottom:12 }}>
           <button
             className="chip"
             onClick={()=>setTab('deposits')}
@@ -159,87 +135,60 @@ function ProfileInner() {
           >
             Выводы ({withdraws.length})
           </button>
-          <div className="sub" style={{ marginLeft: 'auto' }}>
-            {loading ? 'Обновляем…' : 'Актуально'}
-          </div>
+          <div className="sub" style={{ marginLeft:'auto' }}>{loading ? 'Обновляем…' : 'Актуально'}</div>
         </div>
 
-        {/* Таблицы/списки — адаптивные карточки */}
-        {tab === 'deposits' ? (
-          <div>
-            {deposits.length === 0 && <div className="sub">Нет пополнений</div>}
-            <div
-              className="grid"
-              style={{
-                gap: 12,
-                gridTemplateColumns: '1fr',
-              }}
-            >
-              {deposits.slice(0, showDep).map((d) => (
+        {tab==='deposits' ? (
+          <>
+            {deposits.length===0 && <div className="sub">Нет пополнений</div>}
+            <div className="grid" style={{ gap:12, gridTemplateColumns:'1fr' }}>
+              {deposits.slice(0, showDep).map(d=>(
                 <div key={d.id} className="card">
                   <div className="row between wrap">
-                    <div className="h2" style={{ fontSize: 16 }}>
-                      +{d.amount} ₽ <span className="sub">• {d.method === 'fkwallet' ? 'FKWallet' : 'Карта'}</span>
+                    <div className="h2" style={{ fontSize:16 }}>
+                      +{d.amount} ₽ <span className="sub">• {d.method==='fkwallet'?'FKWallet':'Карта'}</span>
                     </div>
                     <StatusBadge s={d.status} />
                   </div>
-                  <div className="sub" style={{ marginTop: 6 }}>{fmtDate(d.createdAt)}</div>
-                  {d.meta && (
-                    <div className="info" style={{ marginTop: 8 }}>
-                      <div className="sub">meta: {JSON.stringify(d.meta)}</div>
-                    </div>
-                  )}
+                  <div className="sub" style={{ marginTop:6 }}>{fmtDate(d.createdAt)}</div>
                 </div>
               ))}
             </div>
-            {showDep < deposits.length && (
-              <div style={{ marginTop: 12 }}>
+            {showDep<deposits.length && (
+              <div style={{ marginTop:12 }}>
                 <button className="btn-outline" onClick={()=>setShowDep(s=>s+PAGE)}>Показать ещё</button>
               </div>
             )}
-          </div>
+          </>
         ) : (
-          <div>
-            {withdraws.length === 0 && <div className="sub">Нет выводов</div>}
-            <div
-              className="grid"
-              style={{
-                gap: 12,
-                gridTemplateColumns: '1fr',
-              }}
-            >
-              {withdraws.slice(0, showWdr).map((w) => (
+          <>
+            {withdraws.length===0 && <div className="sub">Нет выводов</div>}
+            <div className="grid" style={{ gap:12, gridTemplateColumns:'1fr' }}>
+              {withdraws.slice(0, showWdr).map(w=>(
                 <div key={w.id} className="card">
                   <div className="row between wrap">
-                    <div className="h2" style={{ fontSize: 16 }}>
+                    <div className="h2" style={{ fontSize:16 }}>
                       -{w.amount} ₽ <span className="sub">• {w.details ? 'реквизиты указаны' : 'реквизиты —'}</span>
                     </div>
                     <StatusBadge s={w.status} />
                   </div>
-                  <div className="sub" style={{ marginTop: 6 }}>{fmtDate(w.createdAt)}</div>
-                  {w.details && (
-                    <div className="info" style={{ marginTop: 8 }}>
-                      <div className="sub">Реквизиты: {typeof w.details === 'string' ? w.details : JSON.stringify(w.details)}</div>
-                    </div>
-                  )}
+                  <div className="sub" style={{ marginTop:6 }}>{fmtDate(w.createdAt)}</div>
                 </div>
               ))}
             </div>
-            {showWdr < withdraws.length && (
-              <div style={{ marginTop: 12 }}>
+            {showWdr<withdraws.length && (
+              <div style={{ marginTop:12 }}>
                 <button className="btn-outline" onClick={()=>setShowWdr(s=>s+PAGE)}>Показать ещё</button>
               </div>
             )}
-          </div>
+          </>
         )}
       </section>
 
-      {/* Подсказки / демо-строка */}
       <div className="ticker">
-        <div>История обновляется автоматически каждые 20 секунд • Нажмите на вкладки выше, чтобы переключиться между пополнениями и выводами • </div>
+        <div>История обновляется автоматически раз в 20 секунд • Переключайся между вкладками выше • </div>
       </div>
 
-      {/* Небольшая адаптивная донастройка */}
       <style jsx>{`
         @media (min-width: 900px){
           section.grid:first-of-type{
