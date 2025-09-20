@@ -1,42 +1,44 @@
 "use client";
-import React, { useEffect, useMemo, useState } from "react";
-import { usePathname } from "next/navigation";
 
-const ALLOW_OUTSIDE = [/^\/pay(\/|$)/i, /^\/fk(\/|$)/i];
+import { useEffect, useState } from "react";
+
+function looksLikeTelegram(): boolean {
+  try {
+    const w = window as any;
+    const tg = w?.Telegram?.WebApp;
+    if (tg && typeof tg === "object") return true;
+    const ua = navigator.userAgent || "";
+    if (/Telegram/i.test(ua)) return true;
+  } catch {}
+  return false;
+}
 
 export default function Guard({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname() || "/";
-  const [ready, setReady] = useState(false);
-  const inTelegram = useMemo(() => {
-    try { return Boolean((window as any)?.Telegram?.WebApp?.initData); } catch { return false; }
-  }, []);
+  const [isTg, setIsTg] = useState<boolean>(true); // по умолчанию не блокируем
 
   useEffect(() => {
-    // если реально запущены в Telegram — навсегда помечаем устройство как «пропущенное»
-    if (inTelegram) {
-      try { localStorage.setItem("tg_authed_once", "1"); } catch {}
-    }
-    setReady(true);
-  }, [inTelegram]);
-
-  const allowedByPath = ALLOW_OUTSIDE.some((re) => re.test(pathname));
-  let authedOnce = false;
-  try { authedOnce = localStorage.getItem("tg_authed_once") === "1"; } catch {}
-
-  if (!ready) return null;
-
-  if (inTelegram || authedOnce || allowedByPath) {
-    return <>{children}</>;
-  }
+    try {
+      // Безопасно дергаем ready/expand
+      const w = window as any;
+      const tg = w?.Telegram?.WebApp;
+      if (tg && typeof tg.ready === "function") {
+        try { tg.ready(); tg.expand?.(); } catch {}
+      }
+    } catch {}
+    setIsTg(looksLikeTelegram());
+  }, []);
 
   return (
-    <main className="center">
-      <div className="card">
-        <div className="h2">Доступ только через Telegram</div>
-        <div className="sub" style={{ marginTop: 6 }}>
-          Открой мини-приложение через нашего бота. После первого входа ограничения снимаются, чтобы не мешать оплате.
+    <>
+      {!isTg && (
+        <div className="fixed inset-x-0 bottom-4 flex justify-center z-50">
+          <div className="rounded-xl bg-zinc-900/80 border border-zinc-700 px-4 py-3 text-sm shadow-xl backdrop-blur">
+            Доступ только через Telegram. Откройте мини-приложение через бота.
+            <span className="opacity-70"> (временное уведомление — вход не блокируется)</span>
+          </div>
         </div>
-      </div>
-    </main>
+      )}
+      {children}
+    </>
   );
 }
