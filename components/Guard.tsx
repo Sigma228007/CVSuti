@@ -3,26 +3,46 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
 /**
- * Guard — пускаем только из Telegram WebApp.
- * НО: страницы оплаты/результатов (/pay/* и /fk/*) не блокируем,
- * чтобы они работали в браузере и внутри мини-приложения.
+ * Guard — впускаем только из Telegram WebApp.
+ * Разрешаем обход проверки для путей /pay/* и /fk/* (ожидание/страницы результата).
  */
 
-function isTelegramWebApp(): boolean {
+function isFromTelegram(): boolean {
   try {
-    return Boolean((window as any)?.Telegram?.WebApp?.initDataUnsafe);
-  } catch {
-    return false;
-  }
+    const w = window as any;
+
+    // 1) Нативный объект WebApp присутствует
+    if (w?.Telegram?.WebApp) return true;
+
+    // 2) Параметры строки/хэша, которые Telegram добавляет
+    const sp = new URLSearchParams(window.location.search);
+    if (
+      sp.get('tgWebAppData') ||
+      sp.get('initData') ||
+      sp.get('initdata') ||
+      sp.get('init_data')
+    ) {
+      return true;
+    }
+    const hash = window.location.hash || '';
+    if (hash.includes('tgWebAppData=')) return true;
+
+    // 3) Запуск внутри iframe от web.telegram.org / t.me
+    const ao = (window.location as any).ancestorOrigins;
+    if (ao && Array.from(ao as unknown as string[]).some((o) => o.includes('web.telegram.org') || o.includes('t.me'))) {
+      return true;
+    }
+  } catch {}
+  return false;
 }
 
 export default function Guard({ children }: { children: React.ReactNode }) {
   const [ok, setOk] = useState<boolean | null>(null);
 
+  // Белый список путей, которые должны работать и в обычном браузере
   const allowedPath = useMemo(() => {
     try {
       const p = window.location.pathname || '/';
-      // Белый список: ожидание оплаты и странички успеха/ошибки
       if (p.startsWith('/pay/')) return true;
       if (p.startsWith('/fk/')) return true;
     } catch {}
@@ -30,13 +50,11 @@ export default function Guard({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    // если мы на белом пути — пропускаем без проверок
     if (allowedPath) {
       setOk(true);
       return;
     }
-    // иначе требуем Telegram WebApp
-    setOk(isTelegramWebApp());
+    setOk(isFromTelegram());
   }, [allowedPath]);
 
   if (ok === null) {
