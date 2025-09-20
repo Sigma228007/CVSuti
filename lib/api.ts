@@ -1,17 +1,18 @@
 import { getInitData } from "./webapp";
 
-/** Универсальный POST с автоматической прокладкой initData */
-export async function apiPost<T = any>(
-  url: string,
-  payload: Record<string, any> = {}
-): Promise<T> {
+/** Безопасный POST с X-Init-Data */
+export async function apiPost<T = any>(url: string, payload: Record<string, any> = {}): Promise<T> {
   const initData = getInitData();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (initData) headers["X-Init-Data"] = initData;
+
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...(initData ? { "X-Init-Data": initData } : {}) },
+    headers,
     body: JSON.stringify({ initData, ...payload }),
-    cache: 'no-store',
+    cache: "no-store",
   });
+
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`${res.status} ${text || res.statusText}`);
@@ -19,15 +20,17 @@ export async function apiPost<T = any>(
   return res.json();
 }
 
-/** GET баланса с initData в заголовке — безопасный: вне Telegram просто возврат 0 и без 401 */
+/** Баланс — только в ТГ, иначе возвращаем 0 и не ломаемся */
 export async function fetchBalance(): Promise<number> {
   const initData = getInitData();
-  if (!initData) return 0; // вне Telegram: не трогаем API
+  if (!initData) return 0;
+
   const res = await fetch(`/api/balance?ts=${Date.now()}`, {
     method: "GET",
     headers: { "X-Init-Data": initData },
     cache: "no-store",
   });
+
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`${res.status} ${text || res.statusText}`);
