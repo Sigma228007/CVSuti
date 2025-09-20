@@ -1,53 +1,83 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { getDeposit, approveDeposit, markProcessedOnce } from '@/lib/store';
+import { approveDeposit, getDeposit, markProcessedOnce } from '@/lib/store';
+import { notifyUserDepositApproved, notifyUserDepositDeclined } from '@/lib/notify';
 
-function md5(s: string) { return crypto.createHash('md5').update(s).digest('hex'); }
+/**
+ * Документация FreeKassa:
+ * sign = md5(MERCHANT_ID:AMOUNT:SECRET2:MERCHANT_ORDER_ID)
+ * В callback прилетают поля, среди них MERCHANT_ORDER_ID (наш dep_id) и sign.
+ *
+ * Важно: FK может прислать повторный callback — защищаемся меткой "once".
+ */
 
-export async function POST(req: Request) {
-  // Freekassa шлёт form-urlencoded или multipart — берём сырым текстом и парсим SearchParams
-  const contentType = req.headers.get('content-type') || '';
-  let params: URLSearchParams;
+function md5(s: string) {
+  return crypto.createHash('md5').update(s).digest('hex');
+}
+
+export async function POST(req: NextRequest) {
   try {
-    const text = await req.text();
-    params = new URLSearchParams(text);
-  } catch {
-    return new Response('BAD REQUEST', { status: 400 });
+    // FK шлёт form-urlencoded
+    const body = await req.formData();
+    const MERCHANT_ID = String(body.get('MERCHANT_ID') || '');
+    const AMOUNT = String(body.get('AMOUNT') || '');
+    const ORDER_ID = String(body.get('MERCHANT_ORDER_ID') || '');
+    const SIGN = String(body.get('SIGN') || body.get('sign') || '');
+
+    if (!MERCHANT_ID || !AMOUNT || !ORDER_ID || !SIGN) {
+      return NextResponse.json({ ok: false, error: 'bad payload' }, { status: 400 });
+    }
+
+    // проверка подписи
+    const SECRET2 = process.env.FKW_SECRET2 || process.env.FK_SECRET2 || '';
+    if (!SECRET2) {
+      return NextResponse.json({ ok: false, error: 'secret2 is not set' }, { status: 500 });
+    }
+    const my = md5([MERCHANT_ID, AMOUNT, SECRET2, ORDER_ID].join(':'));
+    if (my.toLowerCase() !== SIGN.toLowerCase()) {
+      return NextResponse.json({ ok: false, error: 'bad sign' }, { status: 400 });
+    }
+
+    // защита от дублей
+    const onceKey = `fk:${ORDER_ID}`;
+    const firstTime = await markProcessedOnce(onceKey, 24 * 60 * 60);
+    if (!firstTime) {
+      // отвечаем 200, чтоб FK нас не дудосил ретраями
+      return NextResponse.json({ ok: true, dedup: true });
+    }
+
+    // найдём депозит
+    const dep = await getDeposit(ORDER_ID);
+    if (!dep) {
+      // На крайний случай: FK прислал заказ, которого нет — отвечаем 200, чтобы FK не ретраил.
+      return NextResponse.json({ ok: true, warn: 'deposit not found' });
+    }
+
+    // Если уже не pending — просто ОК
+    if (dep.status !== 'pending') {
+      return NextResponse.json({ ok: true, status: dep.status });
+    }
+
+    // Зачисляем (пишет историю, меняет статус на approved)
+    const updated = await approveDeposit(dep.id);
+
+    // Уведомляем пользователя в Telegram
+    if (updated) {
+      try {
+        await notifyUserDepositApproved({ userId: updated.userId, amount: updated.amount });
+      } catch (e) {
+        // молча
+      }
+    }
+
+    // FK важно получить 200/OK
+    return NextResponse.json({ ok: true });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || 'internal' }, { status: 500 });
   }
+}
 
-  const merchantId = params.get('MERCHANT_ID') || params.get('merchant_id') || params.get('m') || '';
-  const amount     = params.get('AMOUNT')       || params.get('oa')            || params.get('amount') || '';
-  const orderId    = params.get('MERCHANT_ORDER_ID') || params.get('merchant_order_id') || params.get('o') || '';
-  const sign       = params.get('SIGN')         || params.get('s')             || '';
-
-  const secret2 = process.env.FK_SECRET_2 || '';
-  if (!merchantId || !amount || !orderId || !sign || !secret2) {
-    return new Response('BAD REQUEST', { status: 400 });
-  }
-
-  // подпись: md5(merchant:amount:secret2:orderId)
-  const check = md5(`${merchantId}:${amount}:${secret2}:${orderId}`);
-  if (check.toLowerCase() !== sign.toLowerCase()) {
-    console.warn('FK callback bad sign', { check, sign });
-    return new Response('WRONG SIGN', { status: 400 });
-  }
-
-  // защита от дублей
-  const firstTime = await markProcessedOnce(orderId);
-  if (!firstTime) {
-    return new Response('YES'); // уже обработано ранее
-  }
-
-  // ищем депозит
-  const dep = await getDeposit(orderId);
-  if (!dep) {
-    console.warn('FK callback: deposit not found', { orderId });
-    return new Response('YES'); // отвечаем YES, чтобы FK не ретраила, но лог пишем
-  }
-
-  // апрувим (approveDeposit внутри сам зачислит баланс через addBalance)
-  await approveDeposit(dep.id);
-
-  // Отвечаем строго "YES"
-  return new Response('YES');
+export async function GET(req: NextRequest) {
+  // Некоторые кассы умеют дёргать GET — поддержим, чтобы не падать
+  return NextResponse.json({ ok: true, method: 'GET' });
 }

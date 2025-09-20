@@ -1,46 +1,18 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React from 'react';
 
 export default function FkSuccessPage() {
-  // Ничего не открываем и никуда не редиректим — только текст.
-  // Дадим небольшой "виб" для айфона/андроида, чтобы было понятно, что всё ок.
-  useEffect(() => {
-    try {
-      if (window?.navigator?.vibrate) window.navigator.vibrate(12);
-    } catch {}
-  }, []);
-
   return (
-    <main
-      style={{
-        minHeight: '100vh',
-        background: '#0b0f16',
-        color: '#e5e7eb',
-        display: 'grid',
-        placeItems: 'center',
-        padding: 16,
-        fontFamily: 'ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto',
-      }}
-    >
-      <div
-        style={{
-          width: 'min(560px, 92vw)',
-          background: '#111827',
-          border: '1px solid rgba(255,255,255,.08)',
-          borderRadius: 16,
-          padding: 18,
-          textAlign: 'center',
-          boxShadow: '0 12px 36px rgba(0,0,0,.55)',
-        }}
-      >
-        <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Оплата принята ✅</div>
-        <div style={{ color: '#9aa9bd', lineHeight: 1.5 }}>
-          Спасибо! Эту страницу можно закрыть.
-          <br />
-          Вернитесь в Telegram. В мини-приложении будет показано сообщение
-          «Платёж зачислен, перезагрузите мини-приложение для обновления баланса».
-        </div>
+    <main className="center" style={{ padding: 24 }}>
+      <div className="card fade-in" style={{ maxWidth: 560, textAlign: 'center' }}>
+        <div className="h2">✅ Платёж принят</div>
+        <p className="sub" style={{ marginTop: 6 }}>
+          Спасибо! Можете закрыть эту страницу и вернуться в Telegram.
+        </p>
+        <p className="sub" style={{ marginTop: 10 }}>
+          В боте появится сообщение о зачислении. Если его нет — откройте мини-приложение заново.
+        </p>
       </div>
     </main>
   );
