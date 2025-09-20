@@ -1,15 +1,11 @@
-'use client';
+export const dynamic = "force-static";
 
-import React from 'react';
-
-export default function FkErrorPage() {
+export default function FkFail() {
   return (
-    <main className="center" style={{ padding: 24 }}>
-      <div className="card fade-in" style={{ maxWidth: 560, textAlign: 'center' }}>
-        <div className="h2">❌ Платёж не выполнен</div>
-        <p className="sub" style={{ marginTop: 6 }}>
-          Попробуйте ещё раз. Если деньги списались — дождитесь подтверждения от кассы и сообщения в боте.
-        </p>
+    <main className="min-h-dvh grid place-items-center p-6 text-zinc-100 bg-zinc-950">
+      <div className="max-w-lg w-full text-center">
+        <h1 className="text-2xl font-semibold mb-2">Оплата не прошла</h1>
+        <p className="opacity-80">Попробуйте ещё раз. Если проблема повторяется — напишите в поддержку.</p>
       </div>
     </main>
   );

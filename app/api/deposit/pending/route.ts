@@ -1,40 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyInitData } from "@/lib/sign";
-import { listPending } from "@/lib/store";
+import { readUidFromCookies } from "@/lib/session";
+import { listPendingDeposits } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function isAdmin(uid: number | null) {
+  const ids = (process.env.ADMIN_IDS || "").split(",").map((s) => Number(s.trim())).filter(Boolean);
+  return uid != null && ids.includes(uid);
+}
+
+/** Список ожидающих депозитов (для админа). */
 export async function POST(req: NextRequest) {
   try {
-    const { initData } = (await req.json()) as { initData?: string };
+    const uid = readUidFromCookies(req);
+    if (!isAdmin(uid)) return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
 
-    const botToken = process.env.BOT_TOKEN || "";
-    if (!botToken) {
-      return NextResponse.json({ ok: false, error: "BOT_TOKEN missing" }, { status: 500 });
-    }
-    if (!initData) {
-      return NextResponse.json({ ok: false, error: "no initData" }, { status: 401 });
-    }
-
-    const parsed = verifyInitData(initData, botToken);
-    if (!("ok" in parsed) || !parsed.ok) {
-      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
-    }
-
-    // проверка админа
-    const uid = parsed.user.id;
-    const admins = (process.env.ADMIN_IDS || process.env.NEXT_PUBLIC_ADMIN_IDS || "")
-      .split(",")
-      .map((s) => Number(s.trim()))
-      .filter(Boolean);
-    if (!admins.includes(uid)) {
-      return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
-    }
-
-    const pending = await listPending(50);
+    const { limit } = (await req.json().catch(() => ({}))) as { limit?: number };
+    const pending = await listPendingDeposits(Math.max(1, Math.min(200, limit || 50)));
     return NextResponse.json({ ok: true, pending });
-  } catch {
-    return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "pending failed" }, { status: 500 });
   }
 }

@@ -1,46 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyInitData } from "@/lib/sign";
+import { readUidFromCookies } from "@/lib/session";
 import { createDepositRequest } from "@/lib/store";
-import { notifyDepositAdmin } from "@/lib/notify";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+/**
+ * Создаёт pending-депозит (без редиректа). Обычно ты используешь /api/pay/start,
+ * но этот роут можно дергать, если нужна «прямая» заявка через админку и т.п.
+ */
 export async function POST(req: NextRequest) {
   try {
-    const { initData, amount, meta } = (await req.json()) as {
-      initData?: string;
-      amount?: number;
-      meta?: any;
-    };
+    const uid = readUidFromCookies(req);
+    if (!uid) return NextResponse.json({ ok: false, error: "no session" }, { status: 401 });
 
-    if (!process.env.BOT_TOKEN) {
-      return NextResponse.json({ ok: false, error: "BOT_TOKEN missing" }, { status: 500 });
-    }
-    if (!initData) {
-      return NextResponse.json({ ok: false, error: "no initData" }, { status: 401 });
-    }
+    const { amount } = (await req.json().catch(() => ({}))) as { amount?: number };
+    const amt = Math.max(1, Math.floor(Number(amount || 0)));
 
-    const v = verifyInitData(initData, process.env.BOT_TOKEN);
-    if (!v.ok || !v.user) {
-      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
-    }
-
-    const amt = Number(amount ?? 0);
-    if (!Number.isFinite(amt) || amt <= 0) {
-      return NextResponse.json({ ok: false, error: "bad amount" }, { status: 400 });
-    }
-
-    // Метод пополнения у нас один — FKWallet. Передаём это в meta.provider.
-    const dep = await createDepositRequest(v.user.id, Math.floor(amt), {
-      provider: "FKWallet",
-      ...(meta ?? {}),
-    });
-
-    // Уведомление админу (если настроено)
-    try {
-      await notifyDepositAdmin({ id: dep.id, userId: dep.userId, amount: dep.amount });
-    } catch {}
-
-    return NextResponse.json({ ok: true, id: dep.id });
-  } catch (e) {
-    return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
+    const dep = await createDepositRequest(uid, amt, "fkwallet");
+    return NextResponse.json({ ok: true, deposit: dep });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "create failed" }, { status: 500 });
   }
 }

@@ -1,39 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyAdminLink } from "@/lib/sign";
+import { readUidFromCookies } from "@/lib/session";
 import { getDeposit, declineDeposit } from "@/lib/store";
-import { notifyUserDepositDeclined } from "@/lib/notify";
 
-export async function GET(req: NextRequest) {
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function isAdmin(uid: number | null) {
+  const ids = (process.env.ADMIN_IDS || "").split(",").map((s) => Number(s.trim())).filter(Boolean);
+  return uid != null && ids.includes(uid);
+}
+
+/** Отклонение депозита админом. */
+export async function POST(req: NextRequest) {
   try {
-    const key = process.env.ADMIN_SIGN_KEY || "";
-    if (!key) {
-      return NextResponse.json({ ok: false, error: "ADMIN_SIGN_KEY missing" }, { status: 500 });
-    }
+    const uid = readUidFromCookies(req);
+    if (!isAdmin(uid)) return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
 
-    const url = new URL(req.url);
-    const token = url.searchParams.get("sig") || "";
-    const id    = url.searchParams.get("id")  || "";
-
-    if (!token || !id) {
-      return NextResponse.json({ ok: false, error: "bad_params" }, { status: 400 });
-    }
+    const { id } = (await req.json().catch(() => ({}))) as { id?: string };
+    if (!id) return NextResponse.json({ ok: false, error: "bad params" }, { status: 400 });
 
     const dep = await getDeposit(id);
-    if (!dep || dep.status !== "pending") {
-      return NextResponse.json({ ok: false, error: "not_pending" }, { status: 400 });
+    if (!dep) return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
+
+    if (dep.status === "pending") {
+      await declineDeposit(dep);
     }
-
-    const v = verifyAdminLink(token, key);
-    if (!("ok" in v) || !v.ok || v.payload?.id !== dep.id) {
-      return NextResponse.json({ ok: false, error: "bad_sig" }, { status: 400 });
-    }
-
-    await declineDeposit(dep);
-
-    try { await notifyUserDepositDeclined({ userId: dep.userId, amount: dep.amount }); } catch {}
-
     return NextResponse.json({ ok: true });
-  } catch {
-    return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "decline failed" }, { status: 500 });
   }
 }

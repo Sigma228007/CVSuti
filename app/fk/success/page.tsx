@@ -1,18 +1,14 @@
-'use client';
-import React from 'react';
+export const dynamic = "force-static";
 
-export default function SuccessPage() {
-  // Просто страница «спасибо». Никакой логики — начисление делает callback.
+export default function FkSuccess() {
   return (
-    <main className="center">
-      <div className="card fade-in" style={{ maxWidth: 520 }}>
-        <div className="h2">✅ Оплата прошла</div>
-        <p className="sub" style={{ marginTop: 8 }}>
-          Спасибо! Можете закрыть эту вкладку.
+    <main className="min-h-dvh grid place-items-center p-6 text-zinc-100 bg-zinc-950">
+      <div className="max-w-lg w-full text-center">
+        <h1 className="text-2xl font-semibold mb-2">Оплата принята</h1>
+        <p className="opacity-80">
+          Спасибо! Можете закрыть эту страницу. В Telegram перезапустите мини-приложение,
+          чтобы обновить баланс.
         </p>
-        <div style={{ marginTop: 12 }}>
-          <a className="btn-outline" href="javascript:window.close()">Закрыть</a>
-        </div>
       </div>
     </main>
   );

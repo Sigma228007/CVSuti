@@ -1,61 +1,70 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { getDeposit, approveDeposit } from "@/lib/store";
+import { getDeposit, approveDeposit, declineDeposit, addBalance } from "@/lib/store";
 
-function md5(input: string) {
-  return crypto.createHash("md5").update(input).digest("hex");
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+// FK секреты
+const S1 = process.env.FK_SECRET_1 || "";
+const S2 = process.env.FK_SECRET_2 || "";
+const MERCHANT = process.env.FK_MERCHANT_ID || "";
+
+function md5(s: string) {
+  return crypto.createHash("md5").update(s).digest("hex");
 }
 
-export async function POST(req: Request) {
-  const contentType = req.headers.get("content-type") || "";
-  let params: URLSearchParams | null = null;
+function checkSign(params: Record<string, string | undefined>, secret: string) {
+  // для успеха: md5(merchant_id:amount:secret1:order_id)
+  // для фейла:   md5(merchant_id:order_id:secret2)
+  const sign = (params["SIGN"] || params["sign"] || "").toLowerCase();
+  if (params["AMOUNT"] && secret === S1) {
+    const base = `${MERCHANT}:${params["AMOUNT"]}:${S1}:${params["MERCHANT_ORDER_ID"]}`;
+    return md5(base) === sign;
+  }
+  // fail:
+  if (!params["AMOUNT"] && secret === S2) {
+    const base = `${MERCHANT}:${params["MERCHANT_ORDER_ID"]}:${S2}`;
+    return md5(base) === sign;
+  }
+  return false;
+}
 
-  if (contentType.includes("application/x-www-form-urlencoded")) {
-    const text = await req.text();
-    params = new URLSearchParams(text);
-  } else if (contentType.includes("multipart/form-data")) {
-    const text = await req.text();
-    params = new URLSearchParams(text);
-  } else {
-    try {
-      const json = await req.json();
-      params = new URLSearchParams();
-      for (const k of Object.keys(json)) params.set(k, String((json as any)[k]));
-    } catch {
-      return new Response("BAD REQUEST", { status: 400 });
+export async function POST(req: NextRequest) {
+  try {
+    const form = await req.formData();
+    const params: Record<string, string> = {};
+    form.forEach((v, k) => (params[k] = String(v)));
+
+    const orderId = params["MERCHANT_ORDER_ID"];
+    if (!orderId) {
+      return NextResponse.json({ ok: false, error: "bad params" }, { status: 400 });
     }
+
+    const dep = await getDeposit(orderId);
+    if (!dep) return NextResponse.json({ ok: false, error: "dep not found" }, { status: 404 });
+
+    // Если пришёл успех
+    if (params["AMOUNT"]) {
+      if (!checkSign(params, S1)) {
+        return NextResponse.json({ ok: false, error: "bad sign" }, { status: 403 });
+      }
+      if (dep.status !== "approved") {
+        await approveDeposit(dep);            // отметим как approved, подвинем историю и т.п.
+        await addBalance(dep.userId, dep.amount); // начислим деньги
+      }
+      return NextResponse.json({ ok: true });
+    }
+
+    // Иначе считаем это фейлом
+    if (!checkSign(params, S2)) {
+      return NextResponse.json({ ok: false, error: "bad sign" }, { status: 403 });
+    }
+    if (dep.status === "pending") {
+      await declineDeposit(dep);
+    }
+    return NextResponse.json({ ok: true });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "callback failed" }, { status: 500 });
   }
-
-  const merchantId = params.get("MERCHANT_ID") || params.get("merchant_id") || params.get("m");
-  const amount = params.get("AMOUNT") || params.get("oa") || params.get("amount");
-  const orderId = params.get("MERCHANT_ORDER_ID") || params.get("merchant_order_id") || params.get("o");
-  const sign = params.get("SIGN") || params.get("s");
-
-  const secret2 = process.env.FK_SECRET_2 || "";
-  if (!merchantId || !amount || !orderId || !sign || !secret2) {
-    return new Response("BAD REQUEST", { status: 400 });
-  }
-
-  const check = md5(`${merchantId}:${amount}:${secret2}:${orderId}`);
-  if (check.toLowerCase() !== sign.toLowerCase()) {
-    console.warn("FK callback bad sign", { check, sign });
-    return new Response("WRONG SIGN", { status: 400 });
-  }
-
-  // Находим депозит по orderId
-  const dep = await getDeposit(orderId);
-  if (!dep) {
-    console.warn("FK callback: deposit not found", { orderId });
-    return new Response("NOT FOUND", { status: 404 });
-  }
-
-  // Если уже обработан — отвечаем YES повторно (FK любит ретраи)
-  if (dep.status !== "pending") {
-    return new Response("YES");
-  }
-
-  await approveDeposit(dep);
-
-  // Важно: FK требует строгий ответ YES
-  return new Response("YES");
 }
