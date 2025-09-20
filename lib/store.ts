@@ -1,76 +1,25 @@
-import { redis } from "./redis";
+import Redis from "ioredis";
 
-/* ===================== BALANCE ===================== */
+// ---------- Singleton подключение к обычному Redis (Redis Cloud и т.п.) ----------
+let _redis: Redis | null = null;
 
-const balKey = (uid: number) => `u:${uid}:balance`;
-const dataKey = (uid: number) => `u:${uid}:data`;
-
-export async function getBalance(uid: number): Promise<number> {
-  const r = await (await redis()).get(balKey(uid));
-  return r ? parseInt(r, 10) : 0;
-}
-
-export async function setBalance(uid: number, value: number): Promise<number> {
-  await (await redis()).set(balKey(uid), String(Math.max(0, Math.floor(value))));
-  return getBalance(uid);
-}
-
-export async function addBalance(uid: number, delta: number): Promise<number> {
-  const c = await redis();
-  const v = await c.incrBy(balKey(uid), Math.floor(delta));
-  if (v < 0) {
-    await c.set(balKey(uid), "0");
-    return 0;
+export function redis(): Redis {
+  if (!_redis) {
+    const url = process.env.REDIS_URL;
+    if (!url) throw new Error("REDIS_URL is not set in .env");
+    _redis = new Redis(url); // ioredis понимает redis://default:pass@host:port
   }
-  return v;
+  return _redis;
 }
 
-/* ===================== USERS ===================== */
-
-export async function upsertUser(uid: number, data: Record<string, any>) {
-  const c = await redis();
-  await c.hSet(
-    dataKey(uid),
-    Object.fromEntries(Object.entries(data).map(([k, v]) => [k, JSON.stringify(v)])),
-  );
-}
-
-/* ===================== NONCE ===================== */
-
-export async function getNonce(uid?: number): Promise<number> {
-  const c = await redis();
-  const key = uid ? `u:${uid}:nonce` : "nonce";
-  const n = await c.incr(key);
-  return Number(n);
-}
-
-/* ===================== DEPOSITS ===================== */
-
-export type DepositMethod = "fkwallet";
-export type DepositStatus = "pending" | "approved" | "declined";
-
-export type Deposit = {
-  id: string;
-  userId: number;
-  amount: number;
-  method: DepositMethod;
-  status: DepositStatus;
-  createdAt: number;
-  approvedAt?: number;
-  declinedAt?: number;
-  meta?: any;
-};
-
-const depKey = (id: string) => `dep:${id}`;
-const depPendingZ = `deps:pending`;
-
-async function setJSON<T>(key: string, value: T): Promise<void> {
-  const c = await redis();
+// ---------- JSON-хелперы ----------
+export async function setJSON<T>(key: string, value: T): Promise<void> {
+  const c = redis();
   await c.set(key, JSON.stringify(value));
 }
 
-async function getJSON<T>(key: string): Promise<T | null> {
-  const c = await redis();
+export async function getJSON<T>(key: string): Promise<T | null> {
+  const c = redis();
   const s = await c.get(key);
   if (!s) return null;
   try {
@@ -80,202 +29,169 @@ async function getJSON<T>(key: string): Promise<T | null> {
   }
 }
 
-export async function createDepositRequest(
-  userId: number,
-  amount: number,
-  method: DepositMethod,
-  meta?: any
-): Promise<Deposit> {
-  const id = `dep_${Date.now()}_${userId}_${Math.floor(Math.random() * 1e6)}`;
-  const dep: Deposit = {
-    id,
-    userId,
-    amount: Math.floor(amount),
-    method,
-    status: "pending",
-    createdAt: Date.now(),
-    meta: meta ?? null,
-  };
+// ---------- Ключи ----------
+const balKey     = (uid: number) => `bal:${uid}`;
+const nonceKey   = (uid: number) => `nonce:${uid}`;
 
-  const c = await redis();
-  await setJSON(depKey(id), dep);
-  await c.zAdd(depPendingZ, [{ score: dep.createdAt, value: id }]);
+const betsKey    = (uid: number) => `bets:${uid}`;
+const depHistKey = (uid: number) => `hist:dep:${uid}`;
+const wdHistKey  = (uid: number) => `hist:wd:${uid}`;
 
-  return dep;
+const depKey     = (id: string) => `dep:${id}`;
+const wdKey      = (id: string) => `wd:${id}`;
+
+const depsPendingZ = "deps:pending";
+const wdsPendingZ  = "wds:pending";
+
+// ---------- Баланс / nonce ----------
+export async function getBalance(userId: number): Promise<number> {
+  const c = redis();
+  const v = await c.get(balKey(userId));
+  return Number(v || 0);
 }
 
-export async function getDeposit(id: string): Promise<Deposit | null> {
-  return getJSON<Deposit>(depKey(id));
+export async function setBalance(userId: number, value: number): Promise<void> {
+  const c = redis();
+  await c.set(balKey(userId), String(value));
 }
 
-export async function approveDeposit(id: string): Promise<Deposit | null> {
-  const c = await redis();
-  const dep = await getJSON<Deposit>(depKey(id));
-  if (!dep) return null;
-  if (dep.status !== "pending") return dep;
-
-  await addBalance(dep.userId, dep.amount);
-
-  dep.status = "approved";
-  dep.approvedAt = Date.now();
-
-  await setJSON(depKey(id), dep);
-  await c.zRem(depPendingZ, id);
-
-  // сохраним в историю
-  await c.lPush(`hist:dep:${dep.userId}`, JSON.stringify({
-    id: dep.id,
-    amount: dep.amount,
-    status: dep.status,
-    ts: dep.approvedAt,
-    source: "FKWallet",
-  }));
-
-  return dep;
+export async function incrBalance(userId: number, delta: number): Promise<number> {
+  const c = redis();
+  // если нужны копейки — можно заменить на incrbyfloat
+  return await c.incrby(balKey(userId), Math.round(delta));
 }
 
-export async function declineDeposit(id: string): Promise<Deposit | null> {
-  const c = await redis();
-  const dep = await getJSON<Deposit>(depKey(id));
-  if (!dep) return null;
-  if (dep.status !== "pending") return dep;
-
-  dep.status = "declined";
-  dep.declinedAt = Date.now();
-
-  await setJSON(depKey(id), dep);
-  await c.zRem(depPendingZ, id);
-
-  return dep;
+export async function getNonce(userId: number): Promise<number> {
+  const c = redis();
+  const v = await c.get(nonceKey(userId));
+  return Number(v || 0);
 }
 
-export async function listPendingDeposits(limit = 50): Promise<Deposit[]> {
-  const c = await redis();
-  const ids = await c.zRange(depPendingZ, -limit, -1);
-  if (!ids.length) return [];
-  const res: Deposit[] = [];
-  for (const id of ids) {
-    const d = await getJSON<Deposit>(depKey(id));
-    if (d) res.push(d);
-  }
-  res.sort((a, b) => b.createdAt - a.createdAt);
-  return res;
+export async function incNonce(userId: number, step = 1): Promise<number> {
+  const c = redis();
+  return await c.incrby(nonceKey(userId), step);
 }
 
-/* ===================== WITHDRAWS ===================== */
-
-export type WithdrawStatus = "pending" | "approved" | "declined";
-
-export type Withdraw = {
+// ---------- Ставки ----------
+export type BetRecord = {
   id: string;
   userId: number;
   amount: number;
-  details?: any;
-  status: WithdrawStatus;
+  chance: number;
+  result: "win" | "lose";
+  payout: number;
+  roll: number;
+  commit: string;
+  nonce: number;
+  createdAt: number;
+};
+
+export async function writeBet(bet: BetRecord): Promise<void> {
+  const c = redis();
+  await c.lpush(betsKey(bet.userId), JSON.stringify(bet));
+  await c.ltrim(betsKey(bet.userId), 0, 999); // храним до 1000 последних
+}
+
+// ---------- История пользователя ----------
+export async function pushDepositHistory(
+  userId: number,
+  item: { id: string; amount: number; status: string; ts: number; source?: string }
+): Promise<void> {
+  const c = redis();
+  await c.lpush(depHistKey(userId), JSON.stringify(item));
+  await c.ltrim(depHistKey(userId), 0, 199); // до 200 последних депозитов
+}
+
+export async function pushWithdrawHistory(
+  userId: number,
+  item: { id: string; amount: number; status: string; ts: number; details?: any }
+): Promise<void> {
+  const c = redis();
+  await c.lpush(wdHistKey(userId), JSON.stringify(item));
+  await c.ltrim(wdHistKey(userId), 0, 199);
+}
+
+export async function getUserHistory(userId: number, limit = 50) {
+  const c = redis();
+
+  const depRaw = await c.lrange(depHistKey(userId), 0, limit - 1);
+  const wdRaw  = await c.lrange(wdHistKey(userId),  0, limit - 1);
+  const betRaw = await c.lrange(betsKey(userId),    0, limit - 1);
+
+  const parseMany = (arr: (string | Buffer)[]) =>
+    (arr || []).map((s) => {
+      try { return JSON.parse(s.toString()); } catch { return null; }
+    }).filter(Boolean);
+
+  return {
+    deposits: parseMany(depRaw),
+    withdrawals: parseMany(wdRaw),
+    bets: parseMany(betRaw) as BetRecord[],
+  };
+}
+
+// ---------- Pending-списки ----------
+export async function listPendingDeposits(limit = 100) {
+  const c = redis();
+  const ids = await c.zrange(depsPendingZ, 0, limit - 1);
+  const items = await Promise.all(
+    (ids as string[]).map((id) => c.get(depKey(id)))
+  );
+  return items
+    .map((s) => (s ? JSON.parse(s) : null))
+    .filter(Boolean);
+}
+
+export async function listPendingWithdrawals(limit = 100) {
+  const c = redis();
+  const ids = await c.zrange(wdsPendingZ, 0, limit - 1);
+  const items = await Promise.all(
+    (ids as string[]).map((id) => c.get(wdKey(id)))
+  );
+  return items
+    .map((s) => (s ? JSON.parse(s) : null))
+    .filter(Boolean);
+}
+
+// ---------- Депозиты: получить и апрувнуть ----------
+export type Deposit = {
+  id: string;
+  userId: number;
+  amount: number;
+  status: "pending" | "approved" | "declined";
   createdAt: number;
   approvedAt?: number;
   declinedAt?: number;
+  source?: string; // FKWallet / FreeKassa / …
 };
 
-const wdKey = (id: string) => `wd:${id}`;
-const wdPendingZ = `wds:pending`;
-
-export async function createWithdrawRequest(
-  userId: number,
-  amount: number,
-  details?: any
-): Promise<Withdraw> {
-  const balance = await getBalance(userId);
-  if (amount > balance) {
-    throw new Error("Insufficient balance");
-  }
-
-  await setBalance(userId, balance - amount);
-
-  const id = `wd_${Date.now()}_${userId}_${Math.floor(Math.random() * 1e6)}`;
-  const wd: Withdraw = {
-    id,
-    userId,
-    amount: Math.floor(amount),
-    details,
-    status: "pending",
-    createdAt: Date.now(),
-  };
-
-  const c = await redis();
-  await setJSON(wdKey(id), wd);
-  await c.zAdd(wdPendingZ, [{ score: wd.createdAt, value: id }]);
-
-  return wd;
+export async function getDeposit(id: string): Promise<Deposit | null> {
+  return await getJSON<Deposit>(depKey(id));
 }
 
-export async function getWithdraw(id: string): Promise<Withdraw | null> {
-  return getJSON<Withdraw>(wdKey(id));
-}
+/**
+ * Подтверждает депозит:
+ *  - ставит статус approved + время,
+ *  - удаляет из ZSET pending,
+ *  - плюсуeт баланс,
+ *  - пишет в историю депозитов пользователя,
+ *  - сохраняет обновлённый JSON депозита.
+ */
+export async function approveDeposit(dep: Deposit): Promise<void> {
+  const c = redis();
+  const now = Date.now();
 
-export async function approveWithdraw(id: string): Promise<Withdraw | null> {
-  const c = await redis();
-  const wd = await getJSON<Withdraw>(wdKey(id));
-  if (!wd) return null;
-  if (wd.status !== "pending") return wd;
+  dep.status = "approved";
+  dep.approvedAt = now;
 
-  wd.status = "approved";
-  wd.approvedAt = Date.now();
-
-  await setJSON(wdKey(id), wd);
-  await c.zRem(wdPendingZ, id);
-
-  await c.lPush(`hist:wd:${wd.userId}`, JSON.stringify({
-    id: wd.id,
-    amount: wd.amount,
-    status: wd.status,
-    ts: wd.approvedAt,
-    details: wd.details,
-  }));
-
-  return wd;
-}
-
-export async function declineWithdraw(id: string): Promise<Withdraw | null> {
-  const c = await redis();
-  const wd = await getJSON<Withdraw>(wdKey(id));
-  if (!wd) return null;
-  if (wd.status !== "pending") return wd;
-
-  wd.status = "declined";
-  wd.declinedAt = Date.now();
-
-  await setJSON(wdKey(id), wd);
-  await c.zRem(wdPendingZ, id);
-
-  await addBalance(wd.userId, wd.amount);
-
-  return wd;
-}
-
-export async function listPendingWithdraws(limit = 50): Promise<Withdraw[]> {
-  const c = await redis();
-  const ids = await c.zRange(wdPendingZ, -limit, -1);
-  if (!ids.length) return [];
-  const res: Withdraw[] = [];
-  for (const id of ids) {
-    const w = await getJSON<Withdraw>(wdKey(id));
-    if (w) res.push(w);
-  }
-  res.sort((a, b) => b.createdAt - a.createdAt);
-  return res;
-}
-
-/* ===================== HISTORY ===================== */
-
-export async function getDepositHistory(uid: number, limit = 10) {
-  const c = await redis();
-  const items = await c.lRange(`hist:dep:${uid}`, 0, limit - 1);
-  return items.map((s) => JSON.parse(s));
-}
-
-export async function getWithdrawHistory(uid: number, limit = 10) {
-  const c = await redis();
-  const items = await c.lRange(`hist:wd:${uid}`, 0, limit - 1);
-  return items.map((s) => JSON.parse(s));
+  await c.zrem(depsPendingZ, dep.id);
+  await incrBalance(dep.userId, dep.amount);
+  await pushDepositHistory(dep.userId, {
+    id: dep.id,
+    amount: dep.amount,
+    status: dep.status,
+    ts: dep.approvedAt!,
+    source: dep.source || "FKWallet",
+  });
+  await setJSON(depKey(dep.id), dep);
 }
