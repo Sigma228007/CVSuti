@@ -1,65 +1,82 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { getDeposit, approveDeposit } from "@/lib/store";
 
-// Секреты FreeKassa (второй секрет для проверки callback)
-const FK_SECRET_2 = process.env.FK_SECRET_2 || "";
-
-/** Проверка подписи (FreeKassa) */
-function checkSign(
-  params: Record<string, string | undefined>,
-  secret: string
-) {
-  const sign = (params["SIGN"] || "").toString();
-  const keys = ["MERCHANT_ID", "AMOUNT", "MERCHANT_ORDER_ID", "CUR"];
-  const str =
-    keys.map((k) => (params[k] ?? "")).join(":") + ":" + secret;
-  const hash = crypto.createHash("md5").update(str).digest("hex");
-  return hash.toLowerCase() === sign.toLowerCase();
+function md5(s: string) {
+  return crypto.createHash("md5").update(s).digest("hex");
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
-    const form = await req.formData();
-    const params: Record<string, string> = {};
-    for (const [k, v] of form.entries()) params[k] = String(v);
+    const contentType = req.headers.get("content-type") || "";
+    let params: URLSearchParams;
 
-    const orderId = params["MERCHANT_ORDER_ID"];
-    const amount = parseFloat(params["AMOUNT"] || "0");
-
-    // Базовая валидация
-    if (!orderId || !amount) {
-      return NextResponse.json({ error: "bad params" }, { status: 400 });
+    if (contentType.includes("application/x-www-form-urlencoded")) {
+      params = new URLSearchParams(await req.text());
+    } else if (contentType.includes("multipart/form-data")) {
+      // простейший парс как urlencoded — у FK обычно x-www-form-urlencoded
+      params = new URLSearchParams(await req.text());
+    } else {
+      // JSON fallback
+      const json = await req.json().catch(() => null);
+      if (!json || typeof json !== "object") {
+        return new Response("BAD REQUEST", { status: 400 });
+      }
+      params = new URLSearchParams();
+      for (const [k, v] of Object.entries(json)) params.set(k, String(v));
     }
 
-    // Проверяем подпись FK
-    if (!checkSign(params, FK_SECRET_2)) {
-      return NextResponse.json({ error: "bad sign" }, { status: 403 });
+    // поля FreeKassa
+    const merchantId =
+      params.get("MERCHANT_ID") ||
+      params.get("merchant_id") ||
+      params.get("m");
+    const amount =
+      params.get("AMOUNT") || params.get("oa") || params.get("amount");
+    const orderId =
+      params.get("MERCHANT_ORDER_ID") ||
+      params.get("merchant_order_id") ||
+      params.get("o");
+    const sign = params.get("SIGN") || params.get("s");
+
+    const secret2 = process.env.FK_SECRET_2 || "";
+    if (!merchantId || !amount || !orderId || !sign || !secret2) {
+      return new Response("BAD REQUEST", { status: 400 });
     }
 
-    // Ищем депозит по нашему id (dep_xxx)
-    const dep = await getDeposit(orderId);
+    // Проверка подписи FK: md5(merchant:amount:secret2:orderId)
+    const expected = md5(`${merchantId}:${amount}:${secret2}:${orderId}`);
+    if (expected.toLowerCase() !== sign.toLowerCase()) {
+      console.warn("FK callback bad sign", { expected, got: sign });
+      return new Response("WRONG SIGN", { status: 400 });
+    }
+
+    // Сопоставляем заказ с депозитом по id (важно: при создании инвойса orderId = dep.id)
+    const dep = await getDeposit(String(orderId));
     if (!dep) {
-      return NextResponse.json({ error: "dep not found" }, { status: 404 });
+      console.warn("FK callback deposit not found", { orderId });
+      return new Response("NOT FOUND", { status: 404 });
     }
 
-    // Идемпотентность — если уже подтверждён, просто отвечаем ок
-    if (dep.status === "approved") {
-      return NextResponse.json({ ok: true, already: true });
+    // (опционально) сверка суммы
+    const amtNum = Number(amount);
+    if (!Number.isFinite(amtNum) || Math.floor(amtNum) !== dep.amount) {
+      console.warn("FK callback amount mismatch", {
+        expected: dep.amount,
+        got: amount,
+      });
+      // продолжаем, если политика допускает округление/копейки
     }
 
-    // Можно добавить доп.проверки (сумма/валюта), если нужно:
-    // if (Number(dep.amount) !== Number(amount)) { ... }
+    // Помечаем провайдера (у нас поле 'provider' в типе Deposit)
+    dep.provider = dep.provider || "FKWallet";
+    // Подтверждаем депозит (начислит баланс, снимет из pending, добавит историю)
+    await approveDeposit(dep.id);
 
-    // Помечаем источник
-    dep.source = dep.source || "FKWallet";
-
-    // Подтверждаем депозит (история/баланс/удаление из pending внутри)
-    await approveDeposit(dep);
-
-    return NextResponse.json({ ok: true });
+    // FK ожидает ровно 'YES' в ответ при успешной обработке
+    return new Response("YES");
   } catch (e) {
-    console.error("[FK callback] error:", e);
-    return NextResponse.json({ error: "server error" }, { status: 500 });
+    console.error("FK callback error:", e);
+    return NextResponse.json({ ok: false, error: "server_error" }, { status: 500 });
   }
 }

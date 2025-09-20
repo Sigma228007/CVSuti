@@ -1,65 +1,90 @@
-import { NextResponse } from 'next/server';
-import crypto from 'crypto';
-import { verifyInitData } from '@/lib/sign';
-import { createDepositRequest } from '@/lib/store';
+import { NextResponse } from "next/server";
+import crypto from "crypto";
+import { createDepositRequest } from "@/lib/store";
+import { verifyInitData } from "@/lib/sign";
 
-// Возвращает { ok, id, url } — ВСЕГДА, даже если initData пустой.
-// userId ставим 0, если не смогли вытащить из initData (нормально для оплаты).
 type Body = { amount?: number; initData?: string };
 
-function md5(s: string) { return crypto.createHash('md5').update(s).digest('hex'); }
+function md5(s: string) {
+  return crypto.createHash("md5").update(s).digest("hex");
+}
+
+// Пытаемся извлечь userId из initData на всякий случай
+function extractUserId(initData?: string): number | null {
+  if (!initData) return null;
+  try {
+    const p = new URLSearchParams(initData);
+    const userStr = p.get("user");
+    if (userStr) {
+      const u = JSON.parse(userStr);
+      if (u && typeof u.id === "number") return u.id;
+    }
+  } catch {}
+  // fallback грубым regex
+  try {
+    const m = /"id"\s*:\s*(\d{5,})/.exec(initData);
+    if (m) return Number(m[1]);
+  } catch {}
+  return null;
+}
 
 export async function POST(req: Request) {
   try {
-    const merchant = process.env.FK_MERCHANT_ID || '';
-    const secret1  = process.env.FK_SECRET_1 || '';
-    const currency = process.env.CURRENCY || 'RUB';
-    if (!merchant || !secret1) {
-      return NextResponse.json({ ok: false, error: 'FK config missing (FK_MERCHANT_ID/FK_SECRET_1)' }, { status: 500 });
-    }
+    const body = (await req.json()) as Body;
+    const amount = Number(body.amount || 0);
+    const initData = body.initData || "";
 
-    // читаем тело
-    const body = (await req.json().catch(() => ({}))) as Body;
-    const amount = Number(body?.amount || 0);
     if (!Number.isFinite(amount) || amount <= 0) {
-      return NextResponse.json({ ok: false, error: 'bad amount' }, { status: 400 });
+      return NextResponse.json({ ok: false, error: "bad amount" }, { status: 400 });
     }
 
-    // Пытаемся вытащить userId из initData, НО это НЕ обязательно.
-    // Если нет/невалидно — используем userId=0.
-    let userId = 0;
-    const botToken = process.env.BOT_TOKEN || '';
-    const headerInit = (req.headers as any).get?.('x-init-data') || '';
-    const initData = headerInit || body?.initData || '';
-    if (botToken && initData) {
-      try {
-        const v = verifyInitData(initData, botToken);
-        if (v.ok) userId = v.user.id;
-      } catch {}
+    // Verify Telegram initData → гарантируем корректный userId
+    const botToken = process.env.BOT_TOKEN || "";
+    if (!botToken || !initData) {
+      return NextResponse.json({ ok: false, error: "no initData" }, { status: 401 });
+    }
+    const v = verifyInitData(initData, botToken);
+    if (!v.ok || !v.user) {
+      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+    }
+    const userId = v.user.id ?? extractUserId(initData) ?? null;
+    if (!userId) {
+      return NextResponse.json({ ok: false, error: "no userId" }, { status: 401 });
     }
 
-    // 1) создаём pending-депозит (метод fkwallet)
-    const dep = await createDepositRequest(userId, Math.floor(amount), 'fkwallet', null);
+    const merchant = process.env.FK_MERCHANT_ID || "";
+    const secret1 = process.env.FK_SECRET_1 || "";
+    const currency = process.env.CURRENCY || "RUB";
+    if (!merchant || !secret1) {
+      return NextResponse.json({ ok: false, error: "FK config missing" }, { status: 500 });
+    }
+
+    // 1) создаём pending-депозит (источник FKWallet сохраняем в meta.provider)
+    const dep = await createDepositRequest(userId, Math.floor(amount), { provider: "FKWallet" });
 
     // 2) формируем подпись ссылки FK: md5(merchant:amount:secret1:currency:orderId)
     const orderId = dep.id;
-    const sign = md5(`${merchant}:${dep.amount}:${secret1}:${currency}:${orderId}`);
+    const sign = md5(`${merchant}:${amount}:${secret1}:${currency}:${orderId}`);
 
-    // 3) выдаём ссылку на кассу
+    // 3) собираем URL FreeKassa
+    const base = "https://pay.freekassa.com/";
     const params = new URLSearchParams({
       m: String(merchant),
-      oa: String(dep.amount),
+      oa: String(amount),
       o: String(orderId),
       s: sign,
       currency,
-      lang: 'ru',
-      us_dep: orderId,
-      ...(userId ? { us_uid: String(userId) } : {}),
+      lang: "ru",
     });
 
-    const url = 'https://pay.freekassa.com/?' + params.toString();
+    // в экстра-параметрах передадим userId
+    params.set("us_uid", String(userId));
+
+    const url = `${base}?${params.toString()}`;
+
     return NextResponse.json({ ok: true, id: dep.id, url });
   } catch (err: any) {
-    return NextResponse.json({ ok: false, error: err?.message || 'internal' }, { status: 500 });
+    console.error("invoice error", err);
+    return NextResponse.json({ ok: false, error: err?.message || "internal" }, { status: 500 });
   }
 }

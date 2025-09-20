@@ -1,90 +1,88 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { publicCommit, roll } from "@/lib/fair"; // ВАЖНО: используем ваше API fair
+import { roll, publicCommit } from "@/lib/fair";
 import {
   HOUSE_EDGE_BP,
-  MIN_BET,
-  MAX_BET,
   MIN_CHANCE,
   MAX_CHANCE,
+  MIN_BET,
+  MAX_BET,
 } from "@/lib/config";
-import { verifyInitData } from "@/lib/sign";
 import {
   getBalance,
   setBalance,
   getNonce,
-  incNonce,      // <— теперь есть
-  writeBet,      // <— теперь есть
+  incNonce,
+  writeBet,
+  type BetRecord,
 } from "@/lib/store";
+
+// для верификации initData телеги (если у тебя есть)
+import { verifyInitData } from "@/lib/sign";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type TgUser = { id: number; first_name?: string; username?: string };
+type TgUser = {
+  id: number;
+  first_name?: string;
+  username?: string;
+};
 
-function parseInitData(initData: string): { ok: boolean; user?: TgUser } {
-  try {
-    if (!verifyInitData(initData, process.env.BOT_TOKEN!)) return { ok: false };
-    const params = new URLSearchParams(initData);
-    const userStr = params.get("user");
-    if (!userStr) return { ok: false };
-    return { ok: true, user: JSON.parse(userStr) as TgUser };
-  } catch {
-    return { ok: false };
-  }
+function verifyInitDataOrThrow(initData?: string) {
+  const botToken = process.env.BOT_TOKEN;
+  if (!botToken) throw new Error("BOT_TOKEN is not set");
+  const v = verifyInitData(initData ?? "", botToken);
+  if (!v.ok || !v.user) throw new Error("unauthorized");
+  return v.user as TgUser;
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const body = (await req.json()) as {
-      initData?: string;
-      amount: number;
-      chance: number;
-    };
+    const body = await req.json().catch(() => ({}));
+    const initData: string | undefined = body?.initData;
+    const user = verifyInitDataOrThrow(initData);
+    const userId = Number(user.id);
 
-    if (!body.initData) {
-      return NextResponse.json({ error: "no initData" }, { status: 401 });
-    }
-    const auth = parseInitData(body.initData);
-    if (!auth.ok || !auth.user) {
-      return NextResponse.json({ error: "bad auth" }, { status: 401 });
-    }
-    const userId = auth.user.id;
+    const amount = Number(body?.amount ?? 0);
+    const chance = Number(body?.chance ?? 0);
 
-    const amount = Number(body.amount || 0);
-    const chance = Number(body.chance || 0);
-
-    if (!Number.isFinite(amount) || amount < MIN_BET || amount > MAX_BET) {
-      return NextResponse.json(
-        { error: "bad amount", min: MIN_BET, max: MAX_BET },
-        { status: 400 },
-      );
-    }
-    if (!Number.isFinite(chance) || chance < MIN_CHANCE || chance > MAX_CHANCE) {
-      return NextResponse.json(
-        { error: "bad chance", min: MIN_CHANCE, max: MAX_CHANCE },
-        { status: 400 },
-      );
+    if (
+      !Number.isFinite(amount) ||
+      !Number.isFinite(chance) ||
+      amount < MIN_BET ||
+      amount > MAX_BET ||
+      chance < MIN_CHANCE ||
+      chance > MAX_CHANCE
+    ) {
+      return NextResponse.json({ error: "bad params" }, { status: 400 });
     }
 
+    // баланс
     const bal = await getBalance(userId);
     if (bal < amount) {
-      return NextResponse.json({ error: "not enough balance" }, { status: 400 });
+      return NextResponse.json(
+        { error: "not enough balance" },
+        { status: 400 }
+      );
     }
-    const nonce = await getNonce(userId);
 
-    // fair: у вас roll(serverSeed, clientSeed, nonce) -> { value, hex }
+    // nonce #1 (для fair.roll)
+    const nonce1 = await getNonce(userId);
+
+    // fair
     const serverSeed = process.env.SERVER_SEED!;
-    const clientSeed = `${userId}:${nonce}`;
-    const commit = publicCommit(serverSeed); // ← требовал 1 аргумент
-    const r = roll(serverSeed, clientSeed, nonce);
-    const rolled = r.value; // ← число 0..9999
+    const clientSeed = `${userId}:${nonce1}`;
+    const commit = publicCommit(serverSeed);
+    const r = roll(serverSeed, clientSeed, nonce1);
+    const rolled = r.value; // 0..9999
 
     const win = rolled < Math.round(chance * 100);
 
     const rawPayout = Math.floor((amount * 100) / Math.max(chance, 1e-9));
     const payout = Math.floor((rawPayout * (10000 - HOUSE_EDGE_BP)) / 10000);
 
+    // пересчёт баланса
     let newBal = bal - amount;
     let won = 0;
     if (win) {
@@ -93,10 +91,12 @@ export async function POST(req: NextRequest) {
     }
 
     await setBalance(userId, newBal);
-    await incNonce(userId, 1);
 
-    // лог ставки в хранилище
-    await writeBet({
+    // nonce #2 — инкремент после ставки
+    const nonce2 = await incNonce(userId);
+
+    // запись ставки
+    const bet: BetRecord = {
       id: `bet_${Date.now()}_${userId}`,
       userId,
       amount,
@@ -105,20 +105,24 @@ export async function POST(req: NextRequest) {
       payout: won,
       roll: rolled,
       commit,
-      nonce,
+      nonce: nonce2,
       createdAt: Date.now(),
-    });
+    };
+    await writeBet(bet);
 
     return NextResponse.json({
       ok: true,
-      result: win ? "win" : "lose",
+      result: bet.result,
       balance: newBal,
-      roll: rolled,
       payout: won,
+      roll: rolled,
       commit,
-      nonce,
+      nonce: nonce2,
     });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "bet failed" }, { status: 500 });
+    return NextResponse.json(
+      { error: e?.message ?? "bet failed" },
+      { status: 500 }
+    );
   }
 }
