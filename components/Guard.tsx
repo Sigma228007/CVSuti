@@ -1,74 +1,47 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { usePathname } from 'next/navigation';
 
-function getInitDataFromAnywhere(): string | null {
+/** Мягкий детект “мы в Telegram” */
+function isInTelegramWebApp(): boolean {
+  // 1) Нативный объект Telegram WebApp
   try {
-    // 1) Telegram WebApp
-    // @ts-ignore
-    const tg = (typeof window !== 'undefined') ? window?.Telegram?.WebApp : undefined;
-    if (tg?.initData) return tg.initData as string;
-
-    // 2) query (?tgWebAppData=... или ?initData=...)
-    const sp = new URLSearchParams(window.location.search);
-    const q =
-      sp.get('tgWebAppData') ||
-      sp.get('initData') ||
-      sp.get('initdata') ||
-      sp.get('init_data');
-    if (q) return q;
-
-    // 3) hash (#tgWebAppData=...)
-    const hp = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
-    const h =
-      hp.get('tgWebAppData') ||
-      hp.get('initData') ||
-      hp.get('initdata') ||
-      hp.get('init_data');
-    if (h) return h;
-
+    const init = (window as any)?.Telegram?.WebApp?.initData;
+    if (init && typeof init === 'string' && init.length > 0) return true;
   } catch {}
-  return null;
+
+  // 2) Web Telegram в iframe (ancestorOrigins)
+  try {
+    const ao = (window.location as any).ancestorOrigins as unknown;
+    const list: string[] = Array.from((ao as any) || []);
+    if (list.some((o) => /(?:^|\.)web\.telegram\.org$/i.test(o))) return true;
+    if (list.some((o) => /(?:^|\.)t\.me$/i.test(o))) return true;
+    if (list.some((o) => /telegram\.org/i.test(o))) return true;
+  } catch {}
+
+  // 3) Подпись, прилетевшая в строке запроса
+  try {
+    const sp = new URLSearchParams(window.location.search);
+    if (sp.get('tgWebAppData') || sp.get('initData') || sp.get('init_data')) return true;
+  } catch {}
+
+  return false;
 }
 
 export default function Guard({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
-
-  // Разрешённые роуты без Telegram (оплата/результат)
-  const allowWithoutTG = useMemo(() => {
-    if (!pathname) return false;
-    return pathname.startsWith('/pay/') || pathname.startsWith('/fk/');
-  }, [pathname]);
-
   const [ok, setOk] = useState<boolean | null>(null);
 
+  // один раз решаем: пускать / не пускать
+  const decision = useMemo(() => isInTelegramWebApp(), []);
   useEffect(() => {
-    try {
-      // Если специально разрешили — пропускаем
-      if (allowWithoutTG) {
-        setOk(true);
-        return;
-      }
-
-      // Проверяем наличие initData / самого WebApp
-      const hasInit = !!getInitDataFromAnywhere();
-
-      // Иногда в Web версиях помогает ancestorOrigins
-      const ao = (window.location as any).ancestorOrigins as unknown;
-      const fromTelegram =
-        !!(window as any)?.Telegram?.WebApp ||
-        (Array.isArray(ao) &&
-          (ao as string[]).some((o) =>
-            typeof o === 'string' &&
-            (o.includes('web.telegram.org') || o.includes('t.me'))
-          ));
-
-      setOk(Boolean(hasInit || fromTelegram));
-    } catch {
-      setOk(false);
+    // попробуем подождать инициализацию Telegram WebApp (иногда initData появляется с задержкой)
+    if (decision) {
+      setOk(true);
+      return;
     }
-  }, [allowWithoutTG]);
+    const t = setTimeout(() => setOk(isInTelegramWebApp()), 250);
+    return () => clearTimeout(t);
+  }, [decision]);
 
   if (ok === null) {
     return (
@@ -81,9 +54,9 @@ export default function Guard({ children }: { children: React.ReactNode }) {
   if (!ok) {
     return (
       <div className="center">
-        <div className="card" style={{ textAlign: 'center' }}>
+        <div className="card" style={{ textAlign: 'center', maxWidth: 420 }}>
           <div className="h2">Доступ только из Telegram</div>
-          <div className="sub">
+          <div className="sub" style={{ marginTop: 6 }}>
             Откройте мини-приложение через нашего бота.
           </div>
         </div>

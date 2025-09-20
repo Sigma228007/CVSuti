@@ -19,44 +19,55 @@ export default function Page() {
   const [amount, setAmount] = useState<number>(500);
   const [loading, setLoading] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
-  // initData для баннера «вне Telegram»
   const initData = useMemo(() => {
-    try {
-      return getInitData();
-    } catch {
-      return '';
-    }
+    try { return getInitData(); } catch { return ''; }
   }, []);
+  const inTelegram = !!(window as any)?.Telegram?.WebApp;
 
-  // первичная загрузка баланса
+  async function loadBalance() {
+    try {
+      const b = await fetchBalance().catch(() => 0);
+      setBalance(Number.isFinite(b) ? b : 0);
+    } catch {
+      setBalance(0);
+    }
+  }
+
+  // первичная подгрузка баланса
+  useEffect(() => { loadBalance(); }, []);
+
+  // показываем «успех оплаты» + обновляем баланс,
+  // если нас вернули с paid=1 или startapp=paid_* (универсально для FK)
   useEffect(() => {
-    (async () => {
-      try {
-        const b = await fetchBalance().catch(() => 0);
-        setBalance(Number.isFinite(b) ? b : 0);
-      } catch {
-        setBalance(0);
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const paid = sp.get('paid');
+      const startapp = sp.get('startapp') || '';
+      if (paid === '1' || /^paid_/i.test(startapp)) {
+        setToast('Оплата прошла, баланс скоро обновится.');
+        loadBalance();
+        // чистим маркеры из адресной строки, чтобы тост не повторялся
+        sp.delete('paid'); sp.delete('startapp');
+        const url = `${window.location.pathname}${sp.toString() ? `?${sp.toString()}` : ''}`;
+        window.history.replaceState({}, '', url);
       }
-    })();
+    } catch {}
   }, []);
 
   async function handlePay() {
     if (!amount || amount <= 0) return;
     setLoading(true);
     try {
-      // получаем ссылку на оплату во FreeKassa/FKWallet
       const data = await apiPost<{ ok: boolean; url?: string; error?: string }>(
         '/api/fkwallet/invoice',
         { amount, initData }
       );
-
       if (!data?.ok || !data.url) {
         alert('Ошибка подготовки платежа' + (data?.error ? `: ${data.error}` : ''));
         return;
       }
-
-      // открываем кассу: в Telegram — внутри webview, на ПК — новой вкладкой
       openExternal(data.url);
     } catch (e: any) {
       alert('Ошибка сети: ' + (e?.message || e));
@@ -65,44 +76,42 @@ export default function Page() {
     }
   }
 
-  async function refreshBalance() {
-    try {
-      const b = await fetchBalance();
-      setBalance(Number.isFinite(b) ? b : 0);
-    } catch {}
-  }
-
-  const inTelegram = !!(window as any)?.Telegram?.WebApp;
-
   return (
     <main className="container">
       {/* шапка */}
       <div className="row between header">
         <div className="h1">GVsuti — Кошелёк</div>
-
         <div className="row wrap" style={{ gap: 8 }}>
-          <span className="badge">
-            Баланс: <b className="k">{balance ?? '—'} ₽</b>
-          </span>
-          <button className="btn-outline" onClick={refreshBalance}>Обновить</button>
+          <span className="badge">Баланс: <b className="k">{balance ?? '—'} ₽</b></span>
+          <button className="btn-outline" onClick={loadBalance}>Обновить</button>
           <a className="btn-outline" href="/profile" style={{ textDecoration: 'none' }}>
             Профиль
           </a>
         </div>
       </div>
 
-      {/* предупреждение вне Telegram */}
+      {/* мягкое предупреждение вне Telegram */}
       {!inTelegram && !initData && (
         <div className="card" style={{ marginBottom: 12 }}>
           <div className="sub">
-            Это демо-режим вне Telegram. Для авторизации и показа баланса — откройте мини-приложение через
-            нашего бота.
+            Это демо-режим вне Telegram. Для авторизации и показа баланса — откройте мини-приложение через бота.
+          </div>
+        </div>
+      )}
+
+      {/* тост об успешной оплате */}
+      {toast && (
+        <div className="card fade-in" style={{ marginBottom: 12, borderColor: 'rgba(52,211,153,.35)' }}>
+          <div className="h2" style={{ marginBottom: 6 }}>✅ Оплата прошла</div>
+          <div className="sub">Спасибо! Если баланс не обновился — нажмите «Обновить».</div>
+          <div style={{ marginTop: 10 }}>
+            <button className="btn-outline" onClick={() => setToast(null)}>Понятно</button>
           </div>
         </div>
       )}
 
       <div className="grid" style={{ gridTemplateColumns: '1fr', gap: 16 }}>
-        {/* Блок пополнения */}
+        {/* Пополнение */}
         <section className="card">
           <div className="h2">Пополнение через кассу</div>
 
@@ -118,8 +127,8 @@ export default function Page() {
           />
 
           <p className="sub" style={{ marginTop: 8 }}>
-            Оплата откроется во внешнем браузере. После оплаты вернитесь в Telegram — баланс обновится после
-            подтверждения администратором.
+            Оплата откроется во внешнем браузере. После оплаты вернитесь в Telegram —
+            баланс обновится после подтверждения администратором.
           </p>
 
           <div className="row" style={{ gap: 8, marginTop: 10 }}>
@@ -137,7 +146,7 @@ export default function Page() {
           </div>
         </section>
 
-        {/* История (кусок-тизер) */}
+        {/* Тизер профиля/истории */}
         <section className="card">
           <div className="row between">
             <div className="h2">История</div>
