@@ -2,46 +2,46 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 
-/** Мягкий детект “мы в Telegram” */
-function isInTelegramWebApp(): boolean {
-  // 1) Нативный объект Telegram WebApp
+/** Жёстко определяем, что мы «внутри Telegram WebApp» */
+function detectTelegram(): boolean {
   try {
-    const init = (window as any)?.Telegram?.WebApp?.initData;
-    if (init && typeof init === 'string' && init.length > 0) return true;
-  } catch {}
+    // 1) родной объект WebApp
+    const tg = (window as any)?.Telegram?.WebApp;
+    if (tg && tg.initData) return true;
 
-  // 2) Web Telegram в iframe (ancestorOrigins)
-  try {
-    const ao = (window.location as any).ancestorOrigins as unknown;
-    const list: string[] = Array.from((ao as any) || []);
-    if (list.some((o) => /(?:^|\.)web\.telegram\.org$/i.test(o))) return true;
-    if (list.some((o) => /(?:^|\.)t\.me$/i.test(o))) return true;
-    if (list.some((o) => /telegram\.org/i.test(o))) return true;
-  } catch {}
-
-  // 3) Подпись, прилетевшая в строке запроса
-  try {
+    // 2) initdata в query/hash – у некоторых клиентов
     const sp = new URLSearchParams(window.location.search);
-    if (sp.get('tgWebAppData') || sp.get('initData') || sp.get('init_data')) return true;
-  } catch {}
+    if (sp.get('tgWebAppData') || sp.get('initData') || sp.get('initdata') || sp.get('init_data')) {
+      return true;
+    }
+    const hash = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
+    if (hash.get('tgWebAppData') || hash.get('initData')) return true;
 
+    // 3) запускаемся во вьюхе Telegram (iframe). У клиентов есть ancestorOrigins с web.telegram.org / t.me
+    const ao = (window.location as any).ancestorOrigins;
+    if (ao && Array.from(ao as any[]).some((o: string) =>
+      typeof o === 'string' && (o.includes('web.telegram.org') || o.includes('t.me'))
+    )) {
+      return true;
+    }
+  } catch {}
   return false;
 }
 
-export default function Guard({ children }: { children: React.ReactNode }) {
+export default function Guard({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const [ok, setOk] = useState<boolean | null>(null);
 
-  // один раз решаем: пускать / не пускать
-  const decision = useMemo(() => isInTelegramWebApp(), []);
   useEffect(() => {
-    // попробуем подождать инициализацию Telegram WebApp (иногда initData появляется с задержкой)
-    if (decision) {
-      setOk(true);
-      return;
-    }
-    const t = setTimeout(() => setOk(isInTelegramWebApp()), 250);
-    return () => clearTimeout(t);
-  }, [decision]);
+    setOk(detectTelegram());
+    try {
+      const tg = (window as any)?.Telegram?.WebApp;
+      if (tg?.ready) tg.ready();
+    } catch {}
+  }, []);
 
   if (ok === null) {
     return (
@@ -54,11 +54,9 @@ export default function Guard({ children }: { children: React.ReactNode }) {
   if (!ok) {
     return (
       <div className="center">
-        <div className="card" style={{ textAlign: 'center', maxWidth: 420 }}>
-          <div className="h2">Доступ только из Telegram</div>
-          <div className="sub" style={{ marginTop: 6 }}>
-            Откройте мини-приложение через нашего бота.
-          </div>
+        <div className="card" style={{ textAlign: 'center' }}>
+          <div className="h2" style={{ marginBottom: 6 }}>Доступ только из Telegram</div>
+          <div className="sub">Откройте мини-приложение через нашего бота.</div>
         </div>
       </div>
     );
