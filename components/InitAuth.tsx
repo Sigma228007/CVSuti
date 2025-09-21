@@ -1,39 +1,39 @@
 "use client";
-import { useEffect } from "react";
 
-function getAnyInitData(): { initData?: string; uid?: number } {
-  const tg = (globalThis as any).Telegram?.WebApp;
-  if (tg?.initData || tg?.initDataUnsafe?.user?.id) {
-    return {
-      initData: tg?.initData || "",
-      uid: tg?.initDataUnsafe?.user?.id ? Number(tg.initDataUnsafe.user.id) : undefined,
-    };
-  }
-  const qs = new URLSearchParams(window.location.search);
-  const q = qs.get("tgWebAppData");
-  if (q) return { initData: q };
-  const rawUid = qs.get("uid");
-  if (rawUid && Number.isFinite(Number(rawUid))) return { uid: Number(rawUid) };
-  return {};
-}
+import { useEffect, useRef } from "react";
 
 export default function InitAuth() {
+  const once = useRef(false);
+
   useEffect(() => {
-    (async () => {
-      const payload = getAnyInitData();
-      await fetch("/api/auth", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          // важное: явно говорим серверу, что это запуск из Telegram-вебвью
-          "x-telegram-like": (globalThis as any).Telegram?.WebApp ? "1" : "0",
-          ...(payload.initData ? { "x-telegram-init-data": payload.initData } : {}),
-          ...(payload.uid ? { "x-telegram-user-id": String(payload.uid) } : {}),
-        },
-        body: JSON.stringify(payload),
-        credentials: "include",
-      }).catch(() => {});
-    })();
+    if (once.current) return;
+    once.current = true;
+
+    const tg = (window as any).Telegram?.WebApp;
+    try {
+      if (tg?.ready) tg.ready();
+    } catch {}
+
+    // Пытаемся вытащить initData всеми способами
+    const url = new URL(window.location.href);
+    const initFromUrl =
+      url.searchParams.get("initData") || url.searchParams.get("tgWebAppData");
+
+    const initFromTg = tg?.initData || "";
+    const initData = initFromTg || initFromUrl || "";
+
+    const user = tg?.initDataUnsafe?.user || null;
+
+    // Отправляем на сервер и в заголовке, и в body — чтобы уж точно
+    fetch("/api/auth", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-init-data": initData || "",
+      },
+      body: JSON.stringify({ initData, user }),
+      credentials: "include",
+    }).catch(() => {});
   }, []);
 
   return null;
