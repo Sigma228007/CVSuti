@@ -1,26 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readUidFromCookies, isProbablyTelegram } from "@/lib/session";
+import { readUidFromCookies, isTelegramLike } from "@/lib/session";
 import { getBalance } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  try {
-    const uid = await readUidFromCookies(req);
-    if (uid) {
-      const bal = await getBalance(uid);
-      return NextResponse.json({ ok: true, uid, balance: bal });
-    }
+  const uid = readUidFromCookies(req);
 
-    // мягкий режим — пускаем, но баланс 0
-    if (isProbablyTelegram(req)) {
-      return NextResponse.json({ ok: true, uid: null, balance: 0 });
+  if (!uid) {
+    // в dev может не быть куки — но если это Telegram-подобный агент, не роняем UI
+    if (!isTelegramLike(req)) {
+      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
     }
-
-    // явно не из Telegram — блок
-    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || "failed" }, { status: 500 });
+    // «пустой» ответ, чтобы фронт не падал
+    return NextResponse.json({ ok: true, balance: 0, uid: null });
   }
+
+  const balance = await getBalance(uid);
+  return NextResponse.json({ ok: true, uid, balance });
 }

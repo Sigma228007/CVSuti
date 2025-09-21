@@ -1,37 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readUidFromCookies } from "@/lib/session";
-import crypto from "crypto";
 import { createDepositRequest } from "@/lib/store";
+import crypto from "crypto";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {
-    // 1) пробуем вытащить uid из сессии
     const uid = readUidFromCookies(req);
-    if (!uid) {
-      return NextResponse.json({ ok: false, error: "no session" }, { status: 401 });
-    }
+    if (!uid) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
     const { amount } = (await req.json().catch(() => ({}))) as { amount?: number };
     const amt = Math.max(1, Math.floor(Number(amount || 0)));
 
-    // 2) создаём pending-депозит (источник — fkwallet)
+    // создаём pending-депозит
     const dep = await createDepositRequest(uid, amt, "fkwallet");
 
-    // 3) собираем ссылку для FreeKassa (как у тебя было)
-    const merchId = process.env.FK_MERCHANT_ID || "";
-    const s1 = process.env.FK_SECRET_1 || "";
-    const currency = "RUB";
-    const orderId = dep.id;
+    // FreeKassa подпись/ссылка
+    const merchantId = process.env.FK_MERCHANT_ID || "";
+    const secret1    = process.env.FK_SECRET_1   || "";
+    const currency   = "RUB";
+    const sign = crypto.createHash("md5").update(
+      [merchantId, dep.amount, secret1, currency, dep.id].join(":")
+    ).digest("hex");
 
-    const md5 = (s: string) => crypto.createHash("md5").update(s).digest("hex");
-    const sign = md5(`${merchId}:${amt}:${s1}:${currency}:${orderId}`);
+    // ссылка на кассу
+    const payUrl = `https://pay.freekassa.ru/?m=${merchantId}&oa=${dep.amount}&o=${dep.id}&currency=${currency}&s=${sign}`;
 
-    const url = `https://pay.freekassa.ru/?m=${merchId}&oa=${amt}&o=${orderId}&s=${sign}&currency=${currency}`;
-
-    return NextResponse.json({ ok: true, url, orderId });
+    return NextResponse.json({ ok: true, deposit: dep, payUrl });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "start failed" }, { status: 500 });
   }
