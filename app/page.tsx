@@ -1,266 +1,162 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, useCallback } from "react";
+import InitAuth from "@/components/InitAuth";
 
-/** Универсальное получение initData */
-function getInitData(): string {
-  try {
-    // 1) через Telegram WebApp
-    // @ts-ignore
-    const tg = window?.Telegram?.WebApp;
-    if (tg?.initData && tg.initData.length > 10) return tg.initData as string;
-  } catch {}
-
-  try {
-    // 2) через query string (разные варианты ключа)
-    const p = new URLSearchParams(window.location.search);
-    const fromUrl =
-      p.get("tgWebAppData") ||
-      p.get("initData") ||
-      p.get("initdata") ||
-      p.get("init_data");
-    if (fromUrl && fromUrl.length > 10) return fromUrl;
-  } catch {}
-
-  try {
-    // 3) fallback — localStorage
-    const stored = localStorage.getItem("tg_init_data");
-    if (stored && stored.length > 10) return stored;
-  } catch {}
-
-  return "";
-}
-
-function formatRubKop(n: number) {
-  const rub = Number.isFinite(n) ? Number(n) : 0;
-  return rub.toFixed(2).replace(".", ",") + " ₽";
-}
+type BalanceResp = {
+  ok: boolean;
+  uid?: number;
+  balance?: number;
+  error?: string;
+};
 
 export default function Page() {
-  const router = useRouter();
-
-  // ======= STATE =======
+  const [uid, setUid] = useState<number | null>(null);
   const [balance, setBalance] = useState<number>(0);
-  const [balLoading, setBalLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
 
-  const [amount, setAmount] = useState<number>(100);
-  const [chance, setChance] = useState<number>(50);
-  const [dir, setDir] = useState<"over" | "under">("over");
-  const [betLoading, setBetLoading] = useState(false);
-
-  const [showDeposit, setShowDeposit] = useState(false);
-  const [depAmount, setDepAmount] = useState<number>(500);
-  const [waitingPayment, setWaitingPayment] = useState(false);
-  const [showAfterPayBanner, setShowAfterPayBanner] = useState(false);
-
-  const [showWithdraw, setShowWithdraw] = useState(false);
-  const [wdAmount, setWdAmount] = useState<number>(500);
-  const [wdDetails, setWdDetails] = useState<string>("");
-
-  const [activity, setActivity] = useState<string[]>([]);
-  const [online, setOnline] = useState<number>(Math.floor(25 + Math.random() * 60));
-
-  const initData = useMemo(() => {
-    const d = getInitData();
-    if (d) {
-      try {
-        localStorage.setItem("tg_init_data", d); // сохраним для последующих входов
-      } catch {}
-    }
-    return d;
-  }, []);
-
-  // ======= FETCH BALANCE =======
-  async function loadBalance() {
-    setBalLoading(true);
+  const loadBalance = useCallback(async () => {
+    setErr(null);
     try {
-      const res = await fetch(`/api/balance?ts=${Date.now()}`, {
-        method: "GET",
-        headers: { "X-Init-Data": initData },
-        cache: "no-store",
+      const r = await fetch(`/api/balance?ts=${Date.now()}`, {
+        credentials: "include",
       });
-      const j = await res.json();
-      if (res.ok && j?.ok) {
-        setBalance(Number(j.balance || 0));
+      const j: BalanceResp = await r.json();
+      if (!j.ok) {
+        setErr(j.error || "Не удалось получить баланс");
       }
-    } catch {}
-    setBalLoading(false);
-  }
+      if (typeof j.uid === "number") setUid(j.uid);
+      if (typeof j.balance === "number") setBalance(j.balance);
+    } catch (e: any) {
+      setErr(e?.message || "Ошибка соединения");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     loadBalance();
+    // лёгкий автопуллинг раз в 15 сек, чтобы не мешать логике оплаты
+    const t = setInterval(loadBalance, 15000);
+    return () => clearInterval(t);
+  }, [loadBalance]);
 
-    // мягкая имитация онлайна
-    const t = setInterval(() => {
-      setOnline((o) => {
-        const delta = Math.floor(Math.random() * 5) - 2;
-        return Math.max(25, Math.min(100, o + delta));
-      });
-    }, 5000);
-
-    // лента активности
-    const names = ["@neo", "@kira", "@maxx", "@ivan", "@nazar", "@vika", "@mila", "@lev", "@fox"];
-    const tick = setInterval(() => {
-      const name = names[Math.floor(Math.random() * names.length)];
-      const a = 10 + Math.floor(Math.random() * 990);
-      const ch = 1 + Math.floor(Math.random() * 95);
-      const d = Math.random() > 0.5 ? "over" : "under";
-      const win = Math.random() > 0.55;
-      setActivity((prev) => {
-        const row = `${name} • ставка ${a}₽ • шанс ${ch}% • ${
-          d === "over" ? "больше" : "меньше"
-        } • ${win ? "выигрыш" : "проигрыш"}`;
-        const arr = [row, ...prev];
-        if (arr.length > 15) arr.pop();
-        return arr;
-      });
-    }, 3800);
-
-    return () => {
-      clearInterval(t);
-      clearInterval(tick);
-    };
-  }, [initData]);
-
-  // ======= UI =======
   return (
-    <main className="container">
-      <div className="header row between">
-        <div>
-          <div className="h1">🎲 GVSuti</div>
-          <div className="sub">Онлайн игроков: {online}</div>
-        </div>
-        <div>
-          <span className="badge">
-            Баланс: {balLoading ? "…" : formatRubKop(balance)}
-          </span>
-        </div>
-      </div>
+    <main className="min-h-screen bg-[#0b0f14] text-white">
+      {/* Мягкая авторизация сразу после монтирования */}
+      <InitAuth />
 
-      <div className="card">
-        <div className="h2">Сделать ставку</div>
-        <div className="row gap8 wrap">
-          <input
-            type="number"
-            className="input"
-            value={amount}
-            onChange={(e) => setAmount(Number(e.target.value))}
-          />
-          <button className="chip" onClick={() => setAmount(100)}>100</button>
-          <button className="chip" onClick={() => setAmount(500)}>500</button>
-          <button className="chip" onClick={() => setAmount(1000)}>1000</button>
+      <div className="mx-auto max-w-4xl px-4 py-6">
+        {/* Шапка/статус */}
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-semibold">GVSuti</h1>
+            <p className="text-xs opacity-70">честные ставки • provably fair</p>
+          </div>
+
+          <div className="rounded-2xl bg-[#10151c] px-4 py-3 shadow">
+            <div className="text-xs opacity-70">Ваш баланс</div>
+            <div className="text-2xl font-bold">
+              {loading ? "…" : `${(balance || 0).toFixed(2)} ₽`}
+            </div>
+            <div className="mt-1 text-xs opacity-70">
+              UID: {uid ?? "—"}
+            </div>
+          </div>
         </div>
 
-        <div className="label">Шанс (%): {chance}</div>
-        <input
-          type="range"
-          min={1}
-          max={95}
-          value={chance}
-          onChange={(e) => setChance(Number(e.target.value))}
-          className="slider"
-        />
-
-        <div className="row gap8" style={{ marginTop: 12 }}>
-          <button className="btn" disabled={betLoading}>
-            Больше
+        {/* Кнопки */}
+        <div className="mb-6 flex flex-wrap gap-2">
+          <button
+            className="rounded-xl bg-gradient-to-r from-[#34e89e] to-[#0f9] px-4 py-2 font-medium text-black"
+            onClick={() => {
+              // здесь у тебя могла быть логика открытия модалки пополнения
+              const ev = new CustomEvent("open:topup");
+              window.dispatchEvent(ev);
+            }}
+          >
+            Пополнить
           </button>
-          <button className="btn-outline" disabled={betLoading}>
-            Меньше
+
+          <button
+            className="rounded-xl bg-[#141a22] px-4 py-2 font-medium"
+            onClick={() => {
+              const ev = new CustomEvent("open:withdraw");
+              window.dispatchEvent(ev);
+            }}
+          >
+            Вывести
+          </button>
+
+          <button
+            className="rounded-xl bg-[#141a22] px-4 py-2 font-medium"
+            onClick={() => {
+              const ev = new CustomEvent("open:profile");
+              window.dispatchEvent(ev);
+            }}
+          >
+            Профиль
+          </button>
+
+          <button
+            className="rounded-xl bg-[#141a22] px-4 py-2 font-medium"
+            onClick={loadBalance}
+            title="Обновить баланс"
+          >
+            Обновить
           </button>
         </div>
-      </div>
 
-      <div className="card demo">
-        <div className="demo-title">🎯 Лента активности</div>
-        <div className="ticker">
-          <div>{activity.join(" • ")}</div>
-        </div>
-      </div>
+        {/* Секция ставок (упрощённый каркас — твоя логика может быть сложнее) */}
+        <section className="rounded-2xl bg-[#0f141b] p-4 shadow">
+          <h2 className="mb-3 text-lg font-semibold">Сделать ставку</h2>
 
-      <div className="row gap8" style={{ marginTop: 16 }}>
-        <button className="btn" onClick={() => setShowDeposit(true)}>
-          Пополнить
-        </button>
-        <button className="btn-outline" onClick={() => setShowWithdraw(true)}>
-          Вывести
-        </button>
-        <button className="btn-outline" onClick={() => router.push("/profile")}>
-          Профиль
-        </button>
-      </div>
+          <div className="grid items-end gap-3 sm:grid-cols-[1fr_auto]">
+            <div className="space-y-3">
+              <div className="text-sm opacity-80">Сумма</div>
+              <div className="flex gap-2">
+                {([100, 500, 1000] as const).map((s) => (
+                  <button
+                    key={s}
+                    className="rounded-lg bg-[#141a22] px-3 py-2 text-sm"
+                    onClick={() => {
+                      const ev = new CustomEvent("set:bet-amount", {
+                        detail: s,
+                      });
+                      window.dispatchEvent(ev);
+                    }}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-      {showDeposit && (
-        <div className="overlay">
-          <div className="modal">
-            <div className="h2">Пополнение</div>
-            <input
-              type="number"
-              className="input"
-              value={depAmount}
-              onChange={(e) => setDepAmount(Number(e.target.value))}
-            />
-            <button className="btn" style={{ marginTop: 12 }}>
-              Оплатить
-            </button>
             <button
-              className="btn-outline"
-              style={{ marginTop: 8 }}
-              onClick={() => setShowDeposit(false)}
+              className="rounded-xl bg-gradient-to-r from-[#6a11cb] to-[#2575fc] px-5 py-3 font-semibold"
+              onClick={() => {
+                const ev = new CustomEvent("action:bet");
+                window.dispatchEvent(ev);
+              }}
             >
-              Закрыть
+              Сделать ставку
             </button>
           </div>
-        </div>
-      )}
+        </section>
 
-      {showWithdraw && (
-        <div className="overlay">
-          <div className="modal">
-            <div className="h2">Вывод</div>
-            <input
-              type="number"
-              className="input"
-              value={wdAmount}
-              onChange={(e) => setWdAmount(Number(e.target.value))}
-            />
-            <input
-              type="text"
-              className="input"
-              placeholder="Реквизиты"
-              value={wdDetails}
-              onChange={(e) => setWdDetails(e.target.value)}
-            />
-            <button className="btn" style={{ marginTop: 12 }}>
-              Отправить заявку
-            </button>
-            <button
-              className="btn-outline"
-              style={{ marginTop: 8 }}
-              onClick={() => setShowWithdraw(false)}
-            >
-              Закрыть
-            </button>
+        {/* Ошибки */}
+        {err && (
+          <div className="mt-4 rounded-lg bg-[#201a1a] px-3 py-2 text-sm text-red-300">
+            {err}
           </div>
-        </div>
-      )}
+        )}
 
-      {showAfterPayBanner && (
-        <div className="overlay">
-          <div className="modal">
-            <div className="h2">✅ Оплата прошла</div>
-            <div className="sub">Пожалуйста, перезапустите бота для обновления баланса</div>
-            <button
-              className="btn"
-              style={{ marginTop: 12 }}
-              onClick={() => setShowAfterPayBanner(false)}
-            >
-              Ок
-            </button>
-          </div>
+        {/* Подвал/пояснение */}
+        <div className="mt-8 text-center text-xs opacity-60">
+          NVUTI-стиль • выигрыши каждую секунду • лимиты 1–10 000 ₽, шанс 1–95%
         </div>
-      )}
+      </div>
     </main>
   );
 }

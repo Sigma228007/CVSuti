@@ -4,11 +4,10 @@ import {
   readUidFromCookies,
   setUidCookie,
   extractInitDataSources,
+  makeGuestUid,
 } from "@/lib/session";
 import { ensureUser, getBalance } from "@/lib/store";
 
-// максимально мягкая авторизация: берём uid откуда угодно,
-// ставим куку, создаём пользователя (если нужно) — и готово.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -16,62 +15,46 @@ type Body = { initData?: string; uid?: number };
 
 export async function POST(req: NextRequest) {
   try {
+    // 1) если uid уже есть в куке — готово
     const cookieUid = readUidFromCookies(req);
+    if (cookieUid) {
+      const res = NextResponse.json({ ok: true, uid: cookieUid, balance: await getBalance(cookieUid) });
+      setUidCookie(res, cookieUid);
+      return res;
+    }
 
+    // 2) собираем initData из всех источников + возможный uid
     const { initData, uid: bodyUid } = (await req.json().catch(() => ({}))) as Body;
-    const { headerInitData, headerUid, queryInitData } = extractInitDataSources(req);
+    const { headerInitData } = extractInitDataSources(req);
+    let uid: number | null = bodyUid ?? null;
 
-    // кандидаты на initData и uid
-    const allInitData = [initData, headerInitData, queryInitData].filter(Boolean) as string[];
-    const maybeUid = [
-      bodyUid,
-      Number(headerUid || "0") || null,
-      cookieUid,
-    ].find((v) => Number.isFinite(v as number)) as number | null;
+    // 3) парсим initDataUnsafe (без падений)
+    const tryParse = (raw?: string | null) => {
+      if (!raw) return;
+      try {
+        const p = new URLSearchParams(raw);
+        const uStr = p.get("user");
+        if (uStr) {
+          const u = JSON.parse(uStr);
+          if (u?.id && Number.isFinite(Number(u.id))) uid = Number(u.id);
+        }
+      } catch {}
+    };
+    tryParse(initData);
+    tryParse(headerInitData);
 
-    let uid: number | null = maybeUid ?? null;
-
-    // пробуем достать uid из initDataUnsafe (без падений, без верификации)
-    if (!uid) {
-      for (const raw of allInitData) {
-        try {
-          const parsed = new URLSearchParams(raw);
-          const userStr = parsed.get("user");
-          if (userStr) {
-            const u = JSON.parse(userStr);
-            if (u?.id && Number.isFinite(Number(u.id))) {
-              uid = Number(u.id);
-              break;
-            }
-          }
-        } catch {}
-      }
-    }
-
-    // если ещё нет — но это явно Telegram, даём гостевой uid (стабильный по IP+UA)
+    // 4) если это телеграм-вебвью, но id так и не нашли — выдаём гостевой
     if (!uid && isTelegramLike(req)) {
-      // слабая «стабильность» под один запуск клиента
-      const ip = req.headers.get("x-forwarded-for") || "0.0.0.0";
-      const ua = req.headers.get("user-agent") || "tg";
-      uid = Math.abs(
-        Array.from((ip + ua).slice(0, 24)).reduce((acc, ch) => acc + ch.charCodeAt(0), 0)
-      ) + 10_000_000; // чтобы не пересекаться с реальными uid
+      uid = makeGuestUid(req);
     }
 
-    if (!uid) {
-      return NextResponse.json({ ok: false, error: "no initData/uid" }, { status: 400 });
-    }
+    // 5) если и это не помогло — не пускаем (обычный браузер)
+    if (!uid) return NextResponse.json({ ok: false, error: "no initData/uid" }, { status: 400 });
 
-    // зафиксировали куку
-    const res = NextResponse.json({ ok: true, uid });
+    // 6) выставляем куку, создаём пользователя (если его ещё нет)
+    const res = NextResponse.json({ ok: true, uid, balance: await getBalance(uid) });
     setUidCookie(res, uid);
-
-    // создаём/обновляем юзера
     await ensureUser({ id: uid });
-
-    // можно сразу вернуть баланс
-    const balance = await getBalance(uid);
-    (res as any).json = async () => ({ ok: true, uid, balance }); // (для некоторых рантаймов)
 
     return res;
   } catch (e: any) {
