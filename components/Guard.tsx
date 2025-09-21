@@ -2,43 +2,28 @@
 
 import { useEffect, useState } from "react";
 
-function looksLikeTelegram(): boolean {
-  try {
-    const w = window as any;
-    const tg = w?.Telegram?.WebApp;
-    if (tg && typeof tg === "object") return true;
-    const ua = navigator.userAgent || "";
-    if (/Telegram/i.test(ua)) return true;
-  } catch {}
-  return false;
-}
-
 export default function Guard({ children }: { children: React.ReactNode }) {
-  const [isTg, setIsTg] = useState<boolean>(true); // по умолчанию не блокируем
+  const [hasSession, setHasSession] = useState<boolean | null>(null);
 
   useEffect(() => {
-    try {
-      // Безопасно дергаем ready/expand
-      const w = window as any;
-      const tg = w?.Telegram?.WebApp;
-      if (tg && typeof tg.ready === "function") {
-        try { tg.ready(); tg.expand?.(); } catch {}
-      }
-    } catch {}
-    setIsTg(looksLikeTelegram());
+    // простая эвристика: если есть cookie sid — считаем, что авторизованы
+    setHasSession(document.cookie.includes("sid="));
   }, []);
 
-  return (
-    <>
-      {!isTg && (
-        <div className="fixed inset-x-0 bottom-4 flex justify-center z-50">
-          <div className="rounded-xl bg-zinc-900/80 border border-zinc-700 px-4 py-3 text-sm shadow-xl backdrop-blur">
-            Доступ только через Telegram. Откройте мини-приложение через бота.
-            <span className="opacity-70"> (временное уведомление — вход не блокируется)</span>
+  if (hasSession === null) return null;
+
+  if (!hasSession) {
+    return (
+      <div className="fixed inset-0 flex items-center justify-center bg-black/70 z-50">
+        <div className="rounded-xl bg-neutral-900 text-white max-w-md w-[92%] p-5 shadow-lg">
+          <div className="text-lg font-semibold mb-2">Доступ только через Telegram</div>
+          <div className="text-sm opacity-80">
+            Откройте мини-приложение через нашего бота. После первого входа ограничения снимаются, чтобы не мешать оплате.
           </div>
         </div>
-      )}
-      {children}
-    </>
-  );
+      </div>
+    );
+  }
+
+  return <>{children}</>;
 }

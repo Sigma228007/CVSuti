@@ -1,70 +1,65 @@
-import crypto from "crypto";
+import { cookies, headers } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
+import { redis } from "@/lib/store"; // у тебя уже есть redis() в lib/store.ts
 
-const COOKIE_NAME = "sid";
-const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 дней
+const SESS_PREFIX = "sess:";
+const SID_COOKIE = "sid";
+const MAX_AGE = 60 * 60 * 24 * 30; // 30 дней
 
-function getSecret() {
-  // можно использовать ADMIN_SIGN_KEY из твоего .env
-  const s = process.env.ADMIN_SIGN_KEY || process.env.SESSION_SECRET || "dev_secret_change_me";
-  return s;
+export type Session = {
+  userId: number;
+  createdAt: number;
+  lastSeenAt: number;
+};
+
+function randId() {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-function sign(payload: string) {
-  const h = crypto.createHmac("sha256", getSecret());
-  h.update(payload);
-  return h.digest("hex");
+export async function readSession(): Promise<Session | null> {
+  const sid = cookies().get(SID_COOKIE)?.value || "";
+  if (!sid) return null;
+  const json = await redis().get(SESS_PREFIX + sid);
+  if (!json) return null;
+  try {
+    const s = JSON.parse(json) as Session;
+    return s;
+  } catch {
+    return null;
+  }
 }
 
-export function makeSession(uid: number) {
-  const ts = Date.now();
-  const payload = `${uid}.${ts}`;
-  const mac = sign(payload);
-  return `${payload}.${mac}`;
-}
-
-export function verifySession(raw?: string | null): number | null {
-  if (!raw) return null;
-  const parts = raw.split(".");
-  if (parts.length !== 3) return null;
-  const [uidStr, tsStr, mac] = parts;
-  const payload = `${uidStr}.${tsStr}`;
-  const expect = sign(payload);
-  if (expect !== mac) return null;
-
-  const ts = Number(tsStr);
-  if (!Number.isFinite(ts)) return null;
-  if (Date.now() - ts > SESSION_TTL_MS) return null;
-
-  const uid = Number(uidStr);
-  if (!Number.isFinite(uid) || uid <= 0) return null;
-
-  return uid;
-}
-
-export function readUidFromCookies(req: NextRequest): number | null {
-  const cookie = req.cookies.get(COOKIE_NAME)?.value;
-  return verifySession(cookie ?? null);
-}
-
-export function setSessionCookie(res: NextResponse, uid: number) {
-  const value = makeSession(uid);
-  res.cookies.set({
-    name: COOKIE_NAME,
-    value,
+export async function writeSession(resp: NextResponse, userId: number) {
+  const sid = randId();
+  const sess: Session = {
+    userId,
+    createdAt: Date.now(),
+    lastSeenAt: Date.now(),
+  };
+  await redis().set(SESS_PREFIX + sid, JSON.stringify(sess), "EX", MAX_AGE);
+  resp.cookies.set(SID_COOKIE, sid, {
     httpOnly: true,
-    secure: true,
     sameSite: "lax",
+    secure: true,
     path: "/",
-    maxAge: SESSION_TTL_MS / 1000,
+    maxAge: MAX_AGE,
   });
 }
 
-export function clearSessionCookie(res: NextResponse) {
-  res.cookies.set({
-    name: COOKIE_NAME,
-    value: "",
-    path: "/",
-    maxAge: 0,
-  });
+export async function requireSession(req: NextRequest) {
+  const sid = req.cookies.get(SID_COOKIE)?.value || "";
+  if (!sid) return null;
+  const json = await redis().get(SESS_PREFIX + sid);
+  if (!json) return null;
+  try {
+    const s = JSON.parse(json) as Session;
+    // апдейт lastSeen раз в минуту
+    if (Date.now() - s.lastSeenAt > 60_000) {
+      s.lastSeenAt = Date.now();
+      await redis().set(SESS_PREFIX + sid, JSON.stringify(s), "EX", MAX_AGE);
+    }
+    return s;
+  } catch {
+    return null;
+  }
 }
