@@ -1,158 +1,127 @@
-import { NextRequest, NextResponse } from "next/server";
-import { readUidFromCookies, writeUidCookie, extractUserFromInitData } from "@/lib/session";
-import { ensureUser, getBalance } from "@/lib/store";
-
-const BOT_TOKEN = process.env.BOT_TOKEN!;
+import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'crypto';
 
 export async function POST(req: NextRequest) {
   try {
-    // Проверяем существующую сессию
-    const existingUid = readUidFromCookies(req);
-    if (existingUid) {
-      const balance = await getBalance(existingUid);
-      return NextResponse.json({ 
-        ok: true, 
-        uid: existingUid, 
-        balance,
-        fromCookie: true 
-      });
-    }
-
-    // Пробуем получить initData из разных источников
-    let initData: string | undefined;
-    let userIdFromHeader: number | undefined;
-
-    // 1. Из заголовков
-    const headers = req.headers;
-    initData = headers.get('x-init-data') || 
-               headers.get('x-telegram-initdata') || 
-               headers.get('x-tg-initdata') || 
-               undefined;
-
-    // 2. Из тела запроса
+    const { initData } = await req.json();
+    
     if (!initData) {
-      try {
-        const body = await req.json();
-        initData = body.initData || body.tgWebAppData;
-        if (body.userId) userIdFromHeader = Number(body.userId);
-      } catch {}
+      return NextResponse.json(
+        { error: 'initData is required' },
+        { status: 400 }
+      );
     }
 
-    // 3. Из query параметров (для GET запросов)
-    if (!initData) {
-      const url = new URL(req.url);
-      initData = url.searchParams.get('initData') || 
-                 url.searchParams.get('tgWebAppData') || 
-                 undefined;
+    // Проверяем данные Telegram Web App
+    const isValid = verifyTelegramWebAppData(initData);
+    
+    if (!isValid) {
+      return NextResponse.json(
+        { error: 'Invalid Telegram authentication' },
+        { status: 401 }
+      );
     }
 
-    // 4. Из cookies
-    if (!initData) {
-      const cookieInitData = req.cookies.get('tgInitData')?.value;
-      if (cookieInitData) initData = cookieInitData;
-    }
-
-    // Если есть initData, пробуем распарсить
-    if (initData) {
-      const userData = extractUserFromInitData(initData, BOT_TOKEN);
-      
-      if (userData.ok && userData.id) {
-        const uid = Number(userData.id);
-        await ensureUser({ 
-          id: uid, 
-          first_name: userData.user?.first_name, 
-          username: userData.user?.username 
-        });
-
-        const balance = await getBalance(uid);
-        const response = NextResponse.json({ 
-          ok: true, 
-          uid, 
-          balance,
-          user: userData.user 
-        });
-
-        writeUidCookie(response, uid);
-        return response;
-      }
-    }
-
-    // Если есть userId из заголовков
-    if (userIdFromHeader) {
-      await ensureUser({ id: userIdFromHeader });
-      const balance = await getBalance(userIdFromHeader);
-      const response = NextResponse.json({ 
-        ok: true, 
-        uid: userIdFromHeader, 
-        balance 
-      });
-      writeUidCookie(response, userIdFromHeader);
-      return response;
-    }
-
-    // Если ничего не найдено
+    // Извлекаем данные пользователя из initData
+    const userData = parseInitData(initData);
+    
+    // Создаем ответ с пользовательскими данными
     return NextResponse.json({ 
-      ok: false, 
-      error: "Требуется авторизация через Telegram",
-      requireTelegram: true 
-    }, { status: 401 });
-
-  } catch (error: any) {
-    return NextResponse.json({ 
-      ok: false, 
-      error: error.message || "Ошибка авторизации" 
-    }, { status: 500 });
+      success: true, 
+      user: userData,
+      message: 'Authentication successful'
+    });
+    
+  } catch (error) {
+    console.error('Auth error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }
 
-export async function GET(req: NextRequest) {
+function verifyTelegramWebAppData(initData: string): boolean {
   try {
-    const existingUid = readUidFromCookies(req);
-    if (existingUid) {
-      const balance = await getBalance(existingUid);
-      return NextResponse.json({ 
-        ok: true, 
-        uid: existingUid, 
-        balance 
-      });
+    // Для разработки - всегда возвращаем true
+    if (process.env.NODE_ENV === 'development') {
+      console.log('Development mode: skipping Telegram verification');
+      return true;
     }
 
-    const url = new URL(req.url);
-    const initData = url.searchParams.get('initData') || 
-                     url.searchParams.get('tgWebAppData');
+    const urlParams = new URLSearchParams(initData);
+    const hash = urlParams.get('hash');
+    
+    if (!hash) {
+      return false;
+    }
 
-    if (initData) {
-      const userData = extractUserFromInitData(initData, BOT_TOKEN);
-      if (userData.ok && userData.id) {
-        const uid = Number(userData.id);
-        await ensureUser({ 
-          id: uid, 
-          first_name: userData.user?.first_name, 
-          username: userData.user?.username 
-        });
-
-        const balance = await getBalance(uid);
-        const response = NextResponse.json({ 
-          ok: true, 
-          uid, 
-          balance,
-          user: userData.user 
-        });
-
-        writeUidCookie(response, uid);
-        return response;
+    // Собираем данные для проверки
+    const dataToCheck: string[] = [];
+    urlParams.forEach((value, key) => {
+      if (key !== 'hash') {
+        dataToCheck.push(`${key}=${value}`);
       }
+    });
+
+    // Сортируем и объединяем
+    dataToCheck.sort();
+    const dataCheckString = dataToCheck.join('\n');
+
+    // Создаем секретный ключ
+    const secretKey = crypto
+      .createHmac('sha256', 'WebAppData')
+      .update(process.env.BOT_TOKEN || '')
+      .digest();
+
+    // Вычисляем хэш
+    const calculatedHash = crypto
+      .createHmac('sha256', secretKey)
+      .update(dataCheckString)
+      .digest('hex');
+
+    return calculatedHash === hash;
+
+  } catch (error) {
+    console.error('Verification error:', error);
+    return false;
+  }
+}
+
+function parseInitData(initData: string): any {
+  try {
+    const urlParams = new URLSearchParams(initData);
+    const userStr = urlParams.get('user');
+    
+    if (!userStr) {
+      throw new Error('User data not found in initData');
     }
 
-    return NextResponse.json({ 
-      ok: false, 
-      error: "Требуется авторизация" 
-    }, { status: 401 });
+    const userData = JSON.parse(userStr);
+    
+    return {
+      id: userData.id,
+      first_name: userData.first_name,
+      last_name: userData.last_name || '',
+      username: userData.username || '',
+      language_code: userData.language_code || '',
+      is_premium: userData.is_premium || false,
+      allows_write_to_pm: userData.allows_write_to_pm || false
+    };
 
-  } catch (error: any) {
-    return NextResponse.json({ 
-      ok: false, 
-      error: error.message || "Ошибка сервера" 
-    }, { status: 500 });
+  } catch (error) {
+    console.error('Parse initData error:', error);
+    throw new Error('Failed to parse user data');
   }
+}
+
+// Добавляем обработку OPTIONS для CORS
+export async function OPTIONS() {
+  return NextResponse.json({}, {
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    }
+  });
 }
