@@ -1,162 +1,167 @@
-"use client";
+'use client';
 
-import { useEffect, useState, useCallback } from "react";
-import InitAuth from "@/components/InitAuth";
+import React, { useEffect, useState } from 'react';
 
-type BalanceResp = {
-  ok: boolean;
-  uid?: number;
-  balance?: number;
-  error?: string;
-};
+function getInitDataFromLocation(): string | undefined {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return (
+      params.get('initData') ||
+      params.get('initdata') ||
+      params.get('tgWebAppData') ||
+      undefined
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+async function postAuth(initData?: string) {
+  try {
+    const body: any = initData ? { initData } : {};
+    const res = await fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await res.json();
+    return { ok: res.ok, json: j };
+  } catch (e: any) {
+    return { ok: false, json: { ok: false, error: e?.message || String(e) } };
+  }
+}
 
 export default function Page() {
-  const [uid, setUid] = useState<number | null>(null);
-  const [balance, setBalance] = useState<number>(0);
   const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-
-  const loadBalance = useCallback(async () => {
-    setErr(null);
-    try {
-      const r = await fetch(`/api/balance?ts=${Date.now()}`, {
-        credentials: "include",
-      });
-      const j: BalanceResp = await r.json();
-      if (!j.ok) {
-        setErr(j.error || "Не удалось получить баланс");
-      }
-      if (typeof j.uid === "number") setUid(j.uid);
-      if (typeof j.balance === "number") setBalance(j.balance);
-    } catch (e: any) {
-      setErr(e?.message || "Ошибка соединения");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [uid, setUid] = useState<number | null>(null);
+  const [balance, setBalance] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    loadBalance();
-    // лёгкий автопуллинг раз в 15 сек, чтобы не мешать логике оплаты
-    const t = setInterval(loadBalance, 15000);
-    return () => clearInterval(t);
-  }, [loadBalance]);
+    let mounted = true;
+    async function init() {
+      setLoading(true);
+      setError(null);
+
+      // 1) Попробуем взять initData из Telegram WebApp object
+      let initData: string | undefined;
+      try {
+        const tg = (window as any)?.Telegram?.WebApp;
+        if (tg?.initData) initData = tg.initData;
+        // Some wrappers use tgWebAppData in query string instead
+      } catch {}
+
+      // 2) если не для telegram webapp — из query params
+      if (!initData) initData = getInitDataFromLocation();
+
+      // 3) если нашли — POST /api/auth initData
+      const resp = await postAuth(initData);
+      if (!mounted) return;
+      if (resp.ok && resp.json?.ok) {
+        setUid(resp.json.uid ?? null);
+        setBalance(resp.json.balance ?? null);
+      } else {
+        // если не авторизованы — попробуем GET (cookie) или оставим как guest
+        try {
+          const g = await fetch('/api/auth', { method: 'GET' });
+          const gj = await g.json();
+          if (g.ok && gj?.ok) {
+            setUid(gj.uid ?? null);
+            setBalance(gj.balance ?? null);
+          } else {
+            setError(resp.json?.error || 'Not authenticated');
+          }
+        } catch (e: any) {
+          setError(String(e?.message || e));
+        }
+      }
+      setLoading(false);
+    }
+    init();
+    return () => { mounted = false; };
+  }, []);
+
+  // Try to open telegram auth (if env is WebApp)
+  function openTelegramAuth() {
+    try {
+      const tg = (window as any)?.Telegram?.WebApp;
+      if (tg && typeof tg.openAuth === 'function') {
+        // open native auth if available
+        tg.openAuth();
+        return;
+      }
+    } catch {}
+    // fallback: ask user to open bot in Telegram manually
+    alert('Откройте мини-приложение через нашего бота в Telegram (или откройте страницу в WebApp).');
+  }
 
   return (
-    <main className="min-h-screen bg-[#0b0f14] text-white">
-      {/* Мягкая авторизация сразу после монтирования */}
-      <InitAuth />
+    <main style={{ padding: 20, fontFamily: 'Inter, Arial, sans-serif', color: '#e6eef3' }}>
+      <h1 style={{ marginBottom: 12 }}>GVSuti — мини-казино</h1>
 
-      <div className="mx-auto max-w-4xl px-4 py-6">
-        {/* Шапка/статус */}
-        <div className="mb-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-semibold">GVSuti</h1>
-            <p className="text-xs opacity-70">честные ставки • provably fair</p>
-          </div>
-
-          <div className="rounded-2xl bg-[#10151c] px-4 py-3 shadow">
-            <div className="text-xs opacity-70">Ваш баланс</div>
-            <div className="text-2xl font-bold">
-              {loading ? "…" : `${(balance || 0).toFixed(2)} ₽`}
-            </div>
-            <div className="mt-1 text-xs opacity-70">
-              UID: {uid ?? "—"}
-            </div>
-          </div>
-        </div>
-
-        {/* Кнопки */}
-        <div className="mb-6 flex flex-wrap gap-2">
-          <button
-            className="rounded-xl bg-gradient-to-r from-[#34e89e] to-[#0f9] px-4 py-2 font-medium text-black"
-            onClick={() => {
-              // здесь у тебя могла быть логика открытия модалки пополнения
-              const ev = new CustomEvent("open:topup");
-              window.dispatchEvent(ev);
-            }}
-          >
-            Пополнить
-          </button>
-
-          <button
-            className="rounded-xl bg-[#141a22] px-4 py-2 font-medium"
-            onClick={() => {
-              const ev = new CustomEvent("open:withdraw");
-              window.dispatchEvent(ev);
-            }}
-          >
-            Вывести
-          </button>
-
-          <button
-            className="rounded-xl bg-[#141a22] px-4 py-2 font-medium"
-            onClick={() => {
-              const ev = new CustomEvent("open:profile");
-              window.dispatchEvent(ev);
-            }}
-          >
-            Профиль
-          </button>
-
-          <button
-            className="rounded-xl bg-[#141a22] px-4 py-2 font-medium"
-            onClick={loadBalance}
-            title="Обновить баланс"
-          >
-            Обновить
-          </button>
-        </div>
-
-        {/* Секция ставок (упрощённый каркас — твоя логика может быть сложнее) */}
-        <section className="rounded-2xl bg-[#0f141b] p-4 shadow">
-          <h2 className="mb-3 text-lg font-semibold">Сделать ставку</h2>
-
-          <div className="grid items-end gap-3 sm:grid-cols-[1fr_auto]">
-            <div className="space-y-3">
-              <div className="text-sm opacity-80">Сумма</div>
-              <div className="flex gap-2">
-                {([100, 500, 1000] as const).map((s) => (
-                  <button
-                    key={s}
-                    className="rounded-lg bg-[#141a22] px-3 py-2 text-sm"
-                    onClick={() => {
-                      const ev = new CustomEvent("set:bet-amount", {
-                        detail: s,
-                      });
-                      window.dispatchEvent(ev);
-                    }}
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
+      <div style={{
+        maxWidth: 900,
+        background: '#0f1720',
+        padding: 18,
+        borderRadius: 12,
+        boxShadow: '0 6px 24px rgba(0,0,0,0.25)'
+      }}>
+        {loading ? (
+          <div>Загрузка…</div>
+        ) : uid ? (
+          <>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 8 }}>
+              <div style={{ fontWeight: 700 }}>UID:</div>
+              <div>{uid}</div>
+              <div style={{ marginLeft: 'auto', fontWeight: 700 }}>Баланс:</div>
+              <div>{(balance ?? 0).toFixed(2)} ₽</div>
             </div>
 
-            <button
-              className="rounded-xl bg-gradient-to-r from-[#6a11cb] to-[#2575fc] px-5 py-3 font-semibold"
-              onClick={() => {
-                const ev = new CustomEvent("action:bet");
-                window.dispatchEvent(ev);
-              }}
-            >
-              Сделать ставку
-            </button>
-          </div>
-        </section>
+            <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
+              <button className="btn" onClick={() => window.location.href = '/pay'}>Пополнить</button>
+              <button className="btn-outline" onClick={() => window.location.href = '/withdraw'}>Вывести</button>
+              <button className="btn-outline" onClick={() => window.location.href = '/profile'}>Профиль</button>
+            </div>
 
-        {/* Ошибки */}
-        {err && (
-          <div className="mt-4 rounded-lg bg-[#201a1a] px-3 py-2 text-sm text-red-300">
-            {err}
-          </div>
+            <div style={{ marginTop: 12, color: '#9aa9bd' }}>
+              <small>Быстрые ставки: 100 / 500 / 1000 ₽ (настройки в UI)</small>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ marginBottom: 12, color: '#e6eef3' }}>
+              Для использования приложения необходим вход через Telegram.
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn" onClick={openTelegramAuth}>Войти через Telegram</button>
+              <button className="btn-outline" onClick={() => {
+                // try to open auth by prompting user to pass initData via query
+                const id = prompt('Если у вас есть initData — вставьте его сюда (dev).');
+                if (id) {
+                  // send initData manually
+                  postAuth(id).then((r) => {
+                    if (r.ok && r.json.ok) {
+                      window.location.reload();
+                    } else {
+                      alert('Auth failed: ' + (r.json?.error || JSON.stringify(r.json)));
+                    }
+                  });
+                }
+              }}>Ввести initData вручную</button>
+            </div>
+
+            {error && <div style={{ marginTop: 12, color: '#fca5a5' }}>Ошибка: {error}</div>}
+          </>
         )}
-
-        {/* Подвал/пояснение */}
-        <div className="mt-8 text-center text-xs opacity-60">
-          NVUTI-стиль • выигрыши каждую секунду • лимиты 1–10 000 ₽, шанс 1–95%
-        </div>
       </div>
+
+      <section style={{ marginTop: 18 }}>
+        <h2 style={{ fontSize: 18 }}>Последние 10 игр</h2>
+        <div className="card" style={{ marginTop: 8 }}>
+          <div className="sub">Здесь будет список последних игр (демо)</div>
+          {/* TODO: подключите реальную ленту */}
+        </div>
+      </section>
     </main>
   );
 }
