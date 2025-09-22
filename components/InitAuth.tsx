@@ -13,7 +13,6 @@ export default function InitAuth() {
       if (tg?.WebApp) {
         console.log('WebApp available');
         console.log('initData:', tg.WebApp.initData);
-        console.log('initDataUnsafe:', tg.WebApp.initDataUnsafe);
         
         if (tg.WebApp.initData) {
           // Автоматически отправляем на сервер для авторизации
@@ -29,23 +28,20 @@ export default function InitAuth() {
             console.log('Auth response:', data);
             if (data.success) {
               console.log('User authenticated:', data.user);
+              // СОХРАНЯЕМ В LOCALSTORAGE
+              localStorage.setItem('telegram_user', JSON.stringify(data.user));
+              localStorage.setItem('telegram_authenticated', 'true');
             }
           })
           .catch(error => {
             console.error('Auth error:', error);
           });
-        } else {
-          console.warn('initData is empty!');
         }
-      } else {
-        console.warn('Telegram WebApp not available');
       }
     };
 
-    // Проверяем сразу и с задержкой
     checkTelegramData();
     setTimeout(checkTelegramData, 1000);
-    setTimeout(checkTelegramData, 3000);
 
   }, []);
 
