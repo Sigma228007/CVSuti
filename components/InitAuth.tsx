@@ -1,66 +1,52 @@
-"use client";
-import { useEffect } from "react";
-import { saveInitData } from "@/lib/webapp";
+'use client';
+
+import { useEffect } from 'react';
 
 export default function InitAuth() {
   useEffect(() => {
-    const initAuth = async () => {
-      try {
-        const w = window as any;
-        const tg = w?.Telegram?.WebApp;
+    console.log('InitAuth component mounted');
+    
+    const checkTelegramData = () => {
+      const tg = (window as any).Telegram;
+      console.log('Telegram object:', tg);
+      
+      if (tg?.WebApp) {
+        console.log('WebApp available');
+        console.log('initData:', tg.WebApp.initData);
+        console.log('initDataUnsafe:', tg.WebApp.initDataUnsafe);
         
-        // Инициализируем Telegram WebApp
-        if (tg?.ready) {
-          tg.ready();
-          tg.expand(); // Раскрываем на весь экран
-        }
-
-        // Получаем initData всеми способами
-        let initData = '';
-        
-        // 1. Из Telegram WebApp
-        if (tg?.initData) {
-          initData = tg.initData;
-        }
-        
-        // 2. Из URL параметров
-        if (!initData) {
-          const url = new URL(window.location.href);
-          initData = url.searchParams.get('tgWebAppData') || 
-                     url.searchParams.get('initData') || 
-                     '';
-        }
-
-        // 3. Из hash
-        if (!initData) {
-          const hashParams = new URLSearchParams(window.location.hash.slice(1));
-          initData = hashParams.get('tgWebAppData') || 
-                     hashParams.get('initData') || 
-                     '';
-        }
-
-        if (initData) {
-          // Сохраняем для последующего использования
-          saveInitData(initData);
-
-          // Отправляем на сервер
-          await fetch('/api/auth', {
+        if (tg.WebApp.initData) {
+          // Автоматически отправляем на сервер для авторизации
+          fetch('/api/auth', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'X-Init-Data': initData,
             },
-            body: JSON.stringify({ initData }),
-            credentials: 'include'
+            body: JSON.stringify({ initData: tg.WebApp.initData }),
+          })
+          .then(response => response.json())
+          .then(data => {
+            console.log('Auth response:', data);
+            if (data.success) {
+              console.log('User authenticated:', data.user);
+            }
+          })
+          .catch(error => {
+            console.error('Auth error:', error);
           });
+        } else {
+          console.warn('initData is empty!');
         }
-
-      } catch (error) {
-        console.error('Init auth error:', error);
+      } else {
+        console.warn('Telegram WebApp not available');
       }
     };
 
-    initAuth();
+    // Проверяем сразу и с задержкой
+    checkTelegramData();
+    setTimeout(checkTelegramData, 1000);
+    setTimeout(checkTelegramData, 3000);
+
   }, []);
 
   return null;
