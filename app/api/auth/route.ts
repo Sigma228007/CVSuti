@@ -1,158 +1,158 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readUidFromCookies, writeUidCookie, isProbablyTelegram, extractUserFromInitData } from "@/lib/session";
+import { readUidFromCookies, writeUidCookie, extractUserFromInitData } from "@/lib/session";
 import { ensureUser, getBalance } from "@/lib/store";
 
-const BOT_TOKEN = process.env.BOT_TOKEN || process.env.NEXT_PUBLIC_BOT_TOKEN || "";
-
-/**
- * Try many places to find initData / telegram user id.
- */
-function findInitDataOrId(req: NextRequest): { initData?: string; headerId?: number } {
-  // 1) query params
-  try {
-    const url = new URL(req.url);
-    const q = url.searchParams;
-    if (q.get("initData")) return { initData: q.get("initData") || undefined };
-    if (q.get("tgWebAppData")) return { initData: q.get("tgWebAppData") || undefined };
-  } catch (e) {
-    // ignore
-  }
-
-  // 2) headers (several common names)
-  const h = (name: string) => {
-    const v = req.headers.get(name);
-    return v ? v : null;
-  };
-
-  const fromHeader = h("x-init-data") || h("x-telegram-initdata") || h("x-tg-initdata") || h("x-tg-webapp-data");
-  if (fromHeader) return { initData: fromHeader };
-
-  // telegram may send bot api user id header
-  const headerId = h("x-telegram-bot-api-user-id") || h("x-telegram-user-id") || h("x-telegram-id");
-  if (headerId && /^\d+$/.test(headerId)) return { headerId: Number(headerId) };
-
-  // 3) cookie tgInitData fallback
-  try {
-    const tg = req.cookies.get("tgInitData");
-    if (tg && tg.value) return { initData: tg.value };
-  } catch {}
-
-  return {};
-}
-
-async function readBodyInitData(req: NextRequest): Promise<string | undefined> {
-  try {
-    // Try JSON body
-    const ctype = req.headers.get("content-type") || "";
-    if (ctype.includes("application/json")) {
-      const body = await req.json().catch(() => ({}));
-      if (body && body.initData) return String(body.initData);
-    } else {
-      // try formData (e.g., JS post of form)
-      const fd = await req.formData().catch(() => null);
-      if (fd) {
-        const v = fd.get("initData");
-        if (v) return String(v);
-      }
-    }
-  } catch (e) {
-    // ignore parse errors
-  }
-  return undefined;
-}
+const BOT_TOKEN = process.env.BOT_TOKEN!;
 
 export async function POST(req: NextRequest) {
   try {
-    // 0) if we already have uid cookie -> return it immediately
-    const cookieUid = readUidFromCookies(req);
-    if (cookieUid) {
-      const balance = await getBalance(cookieUid);
-      return NextResponse.json({ ok: true, uid: cookieUid, balance });
+    // Проверяем существующую сессию
+    const existingUid = readUidFromCookies(req);
+    if (existingUid) {
+      const balance = await getBalance(existingUid);
+      return NextResponse.json({ 
+        ok: true, 
+        uid: existingUid, 
+        balance,
+        fromCookie: true 
+      });
     }
 
-    // 1) try body initData
-    const bodyInit = await readBodyInitData(req);
-    if (bodyInit) {
-      const parsed = extractUserFromInitData(bodyInit, BOT_TOKEN || undefined);
-      if (parsed.ok && parsed.id) {
-        const uid = Number(parsed.id);
-        // ensure user record
-        await ensureUser({ id: uid, first_name: parsed.user?.first_name, username: parsed.user?.username });
-        const res = NextResponse.json({ ok: true, uid });
-        writeUidCookie(res, uid);
+    // Пробуем получить initData из разных источников
+    let initData: string | undefined;
+    let userIdFromHeader: number | undefined;
+
+    // 1. Из заголовков
+    const headers = req.headers;
+    initData = headers.get('x-init-data') || 
+               headers.get('x-telegram-initdata') || 
+               headers.get('x-tg-initdata') || 
+               undefined;
+
+    // 2. Из тела запроса
+    if (!initData) {
+      try {
+        const body = await req.json();
+        initData = body.initData || body.tgWebAppData;
+        if (body.userId) userIdFromHeader = Number(body.userId);
+      } catch {}
+    }
+
+    // 3. Из query параметров (для GET запросов)
+    if (!initData) {
+      const url = new URL(req.url);
+      initData = url.searchParams.get('initData') || 
+                 url.searchParams.get('tgWebAppData') || 
+                 undefined;
+    }
+
+    // 4. Из cookies
+    if (!initData) {
+      const cookieInitData = req.cookies.get('tgInitData')?.value;
+      if (cookieInitData) initData = cookieInitData;
+    }
+
+    // Если есть initData, пробуем распарсить
+    if (initData) {
+      const userData = extractUserFromInitData(initData, BOT_TOKEN);
+      
+      if (userData.ok && userData.id) {
+        const uid = Number(userData.id);
+        await ensureUser({ 
+          id: uid, 
+          first_name: userData.user?.first_name, 
+          username: userData.user?.username 
+        });
+
         const balance = await getBalance(uid);
-        return NextResponse.json({ ok: true, uid, balance });
-      }
-      // if parse failed — still return helpful error
-      return NextResponse.json({ ok: false, error: "bad initData (body)" }, { status: 400 });
-    }
+        const response = NextResponse.json({ 
+          ok: true, 
+          uid, 
+          balance,
+          user: userData.user 
+        });
 
-    // 2) try many other places: query, headers, cookies
-    const found = findInitDataOrId(req);
-    if (found.initData) {
-      const parsed = extractUserFromInitData(found.initData, BOT_TOKEN || undefined);
-      if (parsed.ok && parsed.id) {
-        const uid = Number(parsed.id);
-        await ensureUser({ id: uid, first_name: parsed.user?.first_name, username: parsed.user?.username });
-        const res = NextResponse.json({ ok: true, uid });
-        writeUidCookie(res, uid);
-        const balance = await getBalance(uid);
-        return NextResponse.json({ ok: true, uid, balance });
-      } else {
-        return NextResponse.json({ ok: false, error: "bad initData (query/header/cookie)" }, { status: 400 });
+        writeUidCookie(response, uid);
+        return response;
       }
     }
 
-    if (found.headerId) {
-      const uid = Number(found.headerId);
-      await ensureUser({ id: uid });
-      const res = NextResponse.json({ ok: true, uid });
-      writeUidCookie(res, uid);
-      const balance = await getBalance(uid);
-      return NextResponse.json({ ok: true, uid, balance });
+    // Если есть userId из заголовков
+    if (userIdFromHeader) {
+      await ensureUser({ id: userIdFromHeader });
+      const balance = await getBalance(userIdFromHeader);
+      const response = NextResponse.json({ 
+        ok: true, 
+        uid: userIdFromHeader, 
+        balance 
+      });
+      writeUidCookie(response, userIdFromHeader);
+      return response;
     }
 
-    // 3) if nothing — but request *looks like* coming from Telegram (heuristic), try to accept
-    if (isProbablyTelegram(req)) {
-      // If we can't extract id but the request appears to be Telegram, respond with explicit error,
-      // but include hint. We DO NOT create random uid here to avoid balance mismatch.
-      return NextResponse.json({ ok: false, error: "no initData; request seems Telegram but no id found. Try passing initData or ensure tg sends x-telegram-bot-api-user-id header." }, { status: 400 });
-    }
+    // Если ничего не найдено
+    return NextResponse.json({ 
+      ok: false, 
+      error: "Требуется авторизация через Telegram",
+      requireTelegram: true 
+    }, { status: 401 });
 
-    // 4) fallback: no auth found
-    return NextResponse.json({ ok: false, error: "no initData" }, { status: 400 });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || String(e) }, { status: 500 });
+  } catch (error: any) {
+    return NextResponse.json({ 
+      ok: false, 
+      error: error.message || "Ошибка авторизации" 
+    }, { status: 500 });
   }
 }
 
-/** Also expose GET for quick debug (reads query initData or existing cookie) */
 export async function GET(req: NextRequest) {
   try {
-    const cookieUid = readUidFromCookies(req);
-    if (cookieUid) {
-      const balance = await getBalance(cookieUid);
-      return NextResponse.json({ ok: true, uid: cookieUid, balance });
+    const existingUid = readUidFromCookies(req);
+    if (existingUid) {
+      const balance = await getBalance(existingUid);
+      return NextResponse.json({ 
+        ok: true, 
+        uid: existingUid, 
+        balance 
+      });
     }
 
     const url = new URL(req.url);
-    const initData = url.searchParams.get("initData") || url.searchParams.get("tgWebAppData") || undefined;
+    const initData = url.searchParams.get('initData') || 
+                     url.searchParams.get('tgWebAppData');
+
     if (initData) {
-      const parsed = extractUserFromInitData(initData, BOT_TOKEN || undefined);
-      if (parsed.ok && parsed.id) {
-        const uid = Number(parsed.id);
-        await ensureUser({ id: uid, first_name: parsed.user?.first_name, username: parsed.user?.username });
-        const res = NextResponse.json({ ok: true, uid });
-        writeUidCookie(res, uid);
+      const userData = extractUserFromInitData(initData, BOT_TOKEN);
+      if (userData.ok && userData.id) {
+        const uid = Number(userData.id);
+        await ensureUser({ 
+          id: uid, 
+          first_name: userData.user?.first_name, 
+          username: userData.user?.username 
+        });
+
         const balance = await getBalance(uid);
-        return NextResponse.json({ ok: true, uid, balance });
-      } else {
-        return NextResponse.json({ ok: false, error: "bad initData (query)" }, { status: 400 });
+        const response = NextResponse.json({ 
+          ok: true, 
+          uid, 
+          balance,
+          user: userData.user 
+        });
+
+        writeUidCookie(response, uid);
+        return response;
       }
     }
 
-    return NextResponse.json({ ok: false, error: "no initData" }, { status: 400 });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || String(e) }, { status: 500 });
+    return NextResponse.json({ 
+      ok: false, 
+      error: "Требуется авторизация" 
+    }, { status: 401 });
+
+  } catch (error: any) {
+    return NextResponse.json({ 
+      ok: false, 
+      error: error.message || "Ошибка сервера" 
+    }, { status: 500 });
   }
 }

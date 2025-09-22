@@ -1,39 +1,66 @@
 "use client";
-
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
+import { saveInitData } from "@/lib/webapp";
 
 export default function InitAuth() {
-  const once = useRef(false);
-
   useEffect(() => {
-    if (once.current) return;
-    once.current = true;
+    const initAuth = async () => {
+      try {
+        const w = window as any;
+        const tg = w?.Telegram?.WebApp;
+        
+        // Инициализируем Telegram WebApp
+        if (tg?.ready) {
+          tg.ready();
+          tg.expand(); // Раскрываем на весь экран
+        }
 
-    const tg = (window as any).Telegram?.WebApp;
-    try {
-      if (tg?.ready) tg.ready();
-    } catch {}
+        // Получаем initData всеми способами
+        let initData = '';
+        
+        // 1. Из Telegram WebApp
+        if (tg?.initData) {
+          initData = tg.initData;
+        }
+        
+        // 2. Из URL параметров
+        if (!initData) {
+          const url = new URL(window.location.href);
+          initData = url.searchParams.get('tgWebAppData') || 
+                     url.searchParams.get('initData') || 
+                     '';
+        }
 
-    // Пытаемся вытащить initData всеми способами
-    const url = new URL(window.location.href);
-    const initFromUrl =
-      url.searchParams.get("initData") || url.searchParams.get("tgWebAppData");
+        // 3. Из hash
+        if (!initData) {
+          const hashParams = new URLSearchParams(window.location.hash.slice(1));
+          initData = hashParams.get('tgWebAppData') || 
+                     hashParams.get('initData') || 
+                     '';
+        }
 
-    const initFromTg = tg?.initData || "";
-    const initData = initFromTg || initFromUrl || "";
+        if (initData) {
+          // Сохраняем для последующего использования
+          saveInitData(initData);
 
-    const user = tg?.initDataUnsafe?.user || null;
+          // Отправляем на сервер
+          await fetch('/api/auth', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Init-Data': initData,
+            },
+            body: JSON.stringify({ initData }),
+            credentials: 'include'
+          });
+        }
 
-    // Отправляем на сервер и в заголовке, и в body — чтобы уж точно
-    fetch("/api/auth", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-telegram-init-data": initData || "",
-      },
-      body: JSON.stringify({ initData, user }),
-      credentials: "include",
-    }).catch(() => {});
+      } catch (error) {
+        console.error('Init auth error:', error);
+      }
+    };
+
+    initAuth();
   }, []);
 
   return null;

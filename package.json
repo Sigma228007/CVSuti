@@ -10,11 +10,15 @@
   },
   "dependencies": {
     "@upstash/redis": "^1.35.4",
+    "concurrently": "^8.2.2",
+    "dotenv": "^16.6.1",
     "ioredis": "^5.7.0",
     "next": "^14.2.32",
+    "nodemon": "^3.1.10",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "redis": "^4.7.1"
+    "redis": "^4.7.1",
+    "telegraf": "^4.16.3"
   },
   "devDependencies": {
     "@types/node": "^24.5.2",
