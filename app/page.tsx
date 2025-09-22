@@ -61,19 +61,9 @@ export default function Page() {
         setUid(resp.json.uid ?? null);
         setBalance(resp.json.balance ?? null);
       } else {
-        // если не авторизованы — попробуем GET (cookie) или оставим как guest
-        try {
-          const g = await fetch('/api/auth', { method: 'GET' });
-          const gj = await g.json();
-          if (g.ok && gj?.ok) {
-            setUid(gj.uid ?? null);
-            setBalance(gj.balance ?? null);
-          } else {
-            setError(resp.json?.error || 'Not authenticated');
-          }
-        } catch (e: any) {
-          setError(String(e?.message || e));
-        }
+        // УДАЛЕН ПРОБЛЕМНЫЙ GET ЗАПРОС
+        // Просто устанавливаем ошибку
+        setError(resp.json?.error || 'Not authenticated');
       }
       setLoading(false);
     }
