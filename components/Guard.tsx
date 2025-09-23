@@ -1,20 +1,33 @@
 "use client";
 import React, { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
+
+// Страницы которые не требуют авторизации
+const PUBLIC_PAGES = ['/fk/success', '/fk/error', '/fk/', '/api/'];
 
 export default function Guard({ children }: { children: React.ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const pathname = usePathname();
 
   useEffect(() => {
     checkAuthStatus();
-  }, []);
+  }, [pathname]);
+
+  const isPublicPage = PUBLIC_PAGES.some(page => pathname?.startsWith(page));
 
   const checkAuthStatus = () => {
-    // Простая проверка localStorage - без серверных запросов
+    if (isPublicPage) {
+      // Публичные страницы - пропускаем без проверки
+      setIsAuthenticated(true);
+      setIsLoading(false);
+      return;
+    }
+
+    // Для защищенных страниц проверяем авторизацию
     const savedAuth = localStorage.getItem('tg_auth');
     const savedUid = localStorage.getItem('tg_uid');
     
-    // Явно преобразуем в boolean
     const authenticated = savedAuth === 'true' && Boolean(savedUid);
     setIsAuthenticated(authenticated);
     setIsLoading(false);
@@ -24,14 +37,13 @@ export default function Guard({ children }: { children: React.ReactNode }) {
     return (
       <div className="center">
         <div className="card" style={{ textAlign: 'center', padding: '40px' }}>
-          <div className="h2">Проверка авторизации...</div>
-          <div className="sub">Загрузка приложения</div>
+          <div className="h2">Загрузка...</div>
         </div>
       </div>
     );
   }
 
-  if (!isAuthenticated) {
+  if (!isAuthenticated && !isPublicPage) {
     return (
       <div className="center">
         <div className="card" style={{ textAlign: 'center', maxWidth: '400px' }}>
@@ -46,7 +58,6 @@ export default function Guard({ children }: { children: React.ReactNode }) {
             <button 
               className="btn"
               onClick={() => {
-                // Пробуем открыть в Telegram
                 const tg = (window as any).Telegram?.WebApp;
                 if (tg) {
                   tg.expand();
@@ -58,16 +69,6 @@ export default function Guard({ children }: { children: React.ReactNode }) {
             >
               Войти через Telegram
             </button>
-            <button 
-              className="btn-outline"
-              onClick={() => window.location.reload()}
-            >
-              Обновить страницу
-            </button>
-          </div>
-          
-          <div className="info" style={{ marginTop: '16px' }}>
-            <small>Откройте приложение через бота в Telegram для автоматической авторизации</small>
           </div>
         </div>
       </div>
