@@ -37,30 +37,44 @@ export async function POST(req: NextRequest) {
     const params: Record<string, string> = {};
     form.forEach((v, k) => (params[k] = String(v)));
 
+    console.log('FreeKassa callback received:', params);
+
     const orderId = params["MERCHANT_ORDER_ID"];
     if (!orderId) {
+      console.error('No order ID in callback');
       return NextResponse.json({ ok: false, error: "bad params" }, { status: 400 });
     }
 
     const dep = await getDeposit(orderId);
-    if (!dep) return NextResponse.json({ ok: false, error: "dep not found" }, { status: 404 });
+    if (!dep) {
+      console.error('Deposit not found:', orderId);
+      return NextResponse.json({ ok: false, error: "dep not found" }, { status: 404 });
+    }
 
     // Если пришёл успех
     if (params["AMOUNT"]) {
       if (!checkSign(params, S1)) {
+        console.error('Invalid signature for success callback');
         return NextResponse.json({ ok: false, error: "bad sign" }, { status: 403 });
       }
       
       if (dep.status !== "approved") {
+        console.log('Approving deposit:', dep.id, 'for user:', dep.userId, 'amount:', dep.amount);
+        
         await approveDeposit(dep);
         await addBalance(dep.userId, dep.amount);
         
+        console.log('Deposit approved successfully');
+
         // Уведомление пользователю
         try {
           await notifyUserDepositApproved(dep);
+          console.log('User notification sent');
         } catch (notifyError) {
           console.error('Deposit approved notification error:', notifyError);
         }
+      } else {
+        console.log('Deposit already approved');
       }
       
       return NextResponse.json({ ok: true });
@@ -68,10 +82,12 @@ export async function POST(req: NextRequest) {
 
     // Иначе считаем это фейлом
     if (!checkSign(params, S2)) {
+      console.error('Invalid signature for failure callback');
       return NextResponse.json({ ok: false, error: "bad sign" }, { status: 403 });
     }
     
     if (dep.status === "pending") {
+      console.log('Declining deposit:', dep.id);
       await declineDeposit(dep);
       
       // Уведомление пользователю
@@ -84,6 +100,7 @@ export async function POST(req: NextRequest) {
     
     return NextResponse.json({ ok: true });
   } catch (e: any) {
+    console.error('Callback error:', e);
     return NextResponse.json({ ok: false, error: e?.message || "callback failed" }, { status: 500 });
   }
 }

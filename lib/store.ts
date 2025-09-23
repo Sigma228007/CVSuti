@@ -101,11 +101,13 @@ export async function ensureUser(u: { id: number; first_name?: string; username?
         "balance": "0",
         "lastSeenAt": String(Date.now())
       });
+      console.log('New user created:', u.id);
     } else {
       // Обновляем данные существующего пользователя
       if (u.first_name) await r.hset(key, "first_name", u.first_name);
       if (u.username) await r.hset(key, "username", u.username);
       await r.hset(key, "lastSeenAt", String(Date.now()));
+      console.log('User updated:', u.id);
     }
   } catch (error) {
     console.error("Error ensuring user:", error);
@@ -116,7 +118,9 @@ export async function ensureUser(u: { id: number; first_name?: string; username?
 export async function getBalance(userId: number): Promise<number> {
   try {
     const v = await redis().hget(kUser(userId), "balance");
-    return v ? Number(v) : 0;
+    const balance = v ? Number(v) : 0;
+    console.log('Retrieved balance for user', userId, ':', balance);
+    return balance;
   } catch (error) {
     console.error("Error getting balance:", error);
     return 0;
@@ -125,7 +129,16 @@ export async function getBalance(userId: number): Promise<number> {
 
 export async function addBalance(userId: number, delta: number): Promise<void> {
   try {
+    console.log('Adding balance to user:', userId, 'delta:', delta);
+    
+    const currentBalance = await getBalance(userId);
+    console.log('Current balance before:', currentBalance);
+    
     await redis().hincrbyfloat(kUser(userId), "balance", delta);
+    
+    const newBalance = await getBalance(userId);
+    console.log('New balance after:', newBalance);
+    
   } catch (error) {
     console.error("Error adding balance:", error);
     throw error;
@@ -174,10 +187,14 @@ export async function createDepositRequest(
   };
   
   try {
+    console.log('Creating deposit request:', dep);
+    
     const r = redis();
     await setJSON(kDep(dep.id), dep);
     await r.zadd(Z_DEPS_PENDING, dep.createdAt, dep.id);
     await pushHistory(userId, { t: "dep_pending", id: dep.id, amount: dep.amount });
+    
+    console.log('Deposit created successfully:', dep.id);
     return dep;
   } catch (error) {
     console.error("Error creating deposit:", error);
@@ -187,7 +204,9 @@ export async function createDepositRequest(
 
 export async function getDeposit(id: string): Promise<Deposit | null> {
   try {
-    return await getJSON<Deposit>(kDep(id));
+    const deposit = await getJSON<Deposit>(kDep(id));
+    console.log('Retrieved deposit:', id, deposit ? 'found' : 'not found');
+    return deposit;
   } catch (error) {
     console.error("Error getting deposit:", error);
     return null;
@@ -195,29 +214,43 @@ export async function getDeposit(id: string): Promise<Deposit | null> {
 }
 
 export async function approveDeposit(dep: Deposit): Promise<void> {
-  if (dep.status === "approved") return;
+  if (dep.status === "approved") {
+    console.log('Deposit already approved:', dep.id);
+    return;
+  }
   
   try {
+    console.log('Approving deposit in store:', dep.id, 'for user:', dep.userId, 'amount:', dep.amount);
+    
     dep.status = "approved";
     dep.approvedAt = Date.now();
     await setJSON(kDep(dep.id), dep);
     await redis().zrem(Z_DEPS_PENDING, dep.id);
     await pushHistory(dep.userId, { t: "dep_approved", id: dep.id, amount: dep.amount });
+    
+    console.log('Deposit approved in store successfully:', dep.id);
   } catch (error) {
-    console.error("Error approving deposit:", error);
+    console.error("Error approving deposit in store:", error);
     throw error;
   }
 }
 
 export async function declineDeposit(dep: Deposit): Promise<void> {
-  if (dep.status === "declined") return;
+  if (dep.status === "declined") {
+    console.log('Deposit already declined:', dep.id);
+    return;
+  }
   
   try {
+    console.log('Declining deposit:', dep.id);
+    
     dep.status = "declined";
     dep.declinedAt = Date.now();
     await setJSON(kDep(dep.id), dep);
     await redis().zrem(Z_DEPS_PENDING, dep.id);
     await pushHistory(dep.userId, { t: "dep_declined", id: dep.id, amount: dep.amount });
+    
+    console.log('Deposit declined successfully:', dep.id);
   } catch (error) {
     console.error("Error declining deposit:", error);
     throw error;
@@ -236,6 +269,8 @@ export async function listPendingDeposits(limit = 50): Promise<Deposit[]> {
     
     const out: Deposit[] = [];
     rows.forEach(([, s]) => { if (s) try { out.push(JSON.parse(s)); } catch {} });
+    
+    console.log('Found pending deposits:', out.length);
     return out;
   } catch (error) {
     console.error("Error listing pending deposits:", error);
