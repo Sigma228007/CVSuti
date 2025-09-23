@@ -14,13 +14,13 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Извлекаем пользователя из initData с проверкой подписи
+    // Извлекаем пользователя из initData
     const userResult = extractUserFromInitData(initData, process.env.BOT_TOKEN);
     
-    if (!userResult.ok || !userResult.verified) {
+    if (!userResult.ok) {
       return NextResponse.json({ 
         ok: false, 
-        error: 'Invalid or unverified initData' 
+        error: 'Invalid initData' 
       });
     }
 
