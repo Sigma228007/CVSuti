@@ -16,8 +16,6 @@ import {
 } from "@/lib/config";
 import { verifyInitData } from "@/lib/sign";
 import { notifyNewBet, notifyUserBetWin, notifyUserBetLoss } from "@/lib/notify";
-
-// Добавляем правильный импорт crypto
 import crypto from "crypto";
 
 export const runtime = "nodejs";
@@ -51,12 +49,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "BOT_TOKEN missing" }, { status: 500 });
     }
     
-    if (!body.initData) {
+    // Получаем initData из заголовков, если нет в теле
+    let initData = body.initData;
+    if (!initData) {
+      initData = req.headers.get('X-Telegram-Init-Data') || '';
+    }
+
+    if (!initData) {
       return NextResponse.json({ ok: false, error: "no initData" }, { status: 400 });
     }
 
     // Проверяем подпись Telegram
-    const v = verifyInitData(body.initData, botToken);
+    const v = verifyInitData(initData, botToken);
     if (!v.ok || !v.user) {
       return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
     }
@@ -66,6 +70,7 @@ export async function POST(req: NextRequest) {
     // Валидация параметров ставки
     const amount = Math.floor(Number(body.amount || 0));
     const chance = Math.max(MIN_CHANCE, Math.min(MAX_CHANCE, Math.floor(Number(body.chance || 0))));
+    const dir = body.dir || 'more';
     
     if (!Number.isFinite(amount) || amount < MIN_BET || amount > MAX_BET) {
       return NextResponse.json({ ok: false, error: "bad amount" }, { status: 400 });
@@ -90,7 +95,7 @@ export async function POST(req: NextRequest) {
 
     const rolled = r.value; // 0..9999
     const winThreshold = Math.round(chance * 100);
-    const win = body.dir === 'more' ? rolled >= winThreshold : rolled < winThreshold;
+    const win = dir === 'more' ? rolled >= winThreshold : rolled < winThreshold;
 
     // Расчет выплаты
     const rawPayout = Math.floor((amount * 100) / Math.max(chance, 1));
@@ -112,6 +117,9 @@ export async function POST(req: NextRequest) {
       amount,
       payout: won,
       rolled,
+      chance,
+      dir,
+      win,
       createdAt: Date.now(),
     };
     
@@ -134,17 +142,14 @@ export async function POST(req: NextRequest) {
       }
     } catch (notifyError) {
       console.error('Notification error:', notifyError);
-      // Не прерываем выполнение из-за ошибки уведомлений
     }
 
     return NextResponse.json({
       ok: true,
       result: win ? "win" : "lose",
       chance,
-      rolled,
+      rolled: rolled / 100, // Конвертируем в проценты для клиента
       payout: won,
-      nonce,
-      commit,
       balanceDelta: win ? won - amount : -amount,
     });
     

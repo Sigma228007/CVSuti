@@ -2,11 +2,16 @@ import Redis from "ioredis";
 
 /** ---------- Redis client (singleton) ---------- */
 let _r: Redis | null = null;
+
 export function redis(): Redis {
   if (_r) return _r;
   const url = process.env.REDIS_URL;
   if (!url) throw new Error("REDIS_URL is not set");
-  _r = new Redis(url, { maxRetriesPerRequest: 2, lazyConnect: false });
+  _r = new Redis(url, { 
+    maxRetriesPerRequest: 2, 
+    lazyConnect: false,
+    // Убрал retryDelayOnFailover - этого параметра нет в ioredis
+  });
   return _r;
 }
 
@@ -17,7 +22,7 @@ export type WithdrawStatus = "pending" | "approved" | "declined";
 export type Deposit = {
   id: string;
   userId: number;
-  amount: number; // рубли (целые)
+  amount: number;
   status: DepositStatus;
   createdAt: number;
   approvedAt?: number;
@@ -28,7 +33,7 @@ export type Deposit = {
 export type Withdraw = {
   id: string;
   userId: number;
-  amount: number; // при создании списываем в резерв (минус из баланса)
+  amount: number;
   details?: any;
   status: WithdrawStatus;
   createdAt: number;
@@ -40,8 +45,9 @@ export type UserRecord = {
   id: number;
   first_name?: string;
   username?: string;
-  balance?: number; // рубли
+  balance?: number;
   lastSeenAt?: number;
+  createdAt?: number;
 };
 
 export type BetRecord = {
@@ -50,17 +56,21 @@ export type BetRecord = {
   amount: number;
   payout: number;
   rolled: number;
+  chance?: number;
+  dir?: string;
+  win?: boolean;
   createdAt: number;
 };
 
 /** ---------- Keys helpers ---------- */
-const kUser = (id: number) => `user:${id}`; // HASH (id, first_name, username, balance, lastSeenAt)
-const kHist = (id: number) => `hist:${id}`; // LIST of JSON (latest first)
-const kDep = (id: string) => `dep:${id}`;   // STRING JSON of Deposit
-const kWd = (id: string) => `wd:${id}`;     // STRING JSON of Withdraw
+const kUser = (id: number) => `user:${id}`;
+const kHist = (id: number) => `hist:${id}`;
+const kDep = (id: string) => `dep:${id}`;
+const kWd = (id: string) => `wd:${id}`;
+const kNonce = (id: number) => `nonce:${id}`;
 
-const Z_DEPS_PENDING = "deps:pending";      // ZSET (member=id, score=createdAt)
-const Z_WDS_PENDING = "wds:pending";        // ZSET (member=id, score=createdAt) 
+const Z_DEPS_PENDING = "deps:pending";
+const Z_WDS_PENDING = "wds:pending";
 
 /** ---------- Small utils ---------- */
 async function setJSON(key: string, v: any) {
@@ -84,30 +94,61 @@ async function pushHistory(userId: number, payload: any, keep = 200) {
 }
 
 /** ---------- Users / Balance ---------- */
+export async function userExists(userId: number): Promise<boolean> {
+  try {
+    return await redis().hexists(kUser(userId), "id") === 1;
+  } catch (error) {
+    console.error("Error checking user existence:", error);
+    return false;
+  }
+}
+
+export async function getUser(userId: number): Promise<UserRecord | null> {
+  try {
+    const userData = await redis().hgetall(kUser(userId));
+    if (!userData || !userData.id) return null;
+    
+    return {
+      id: parseInt(userData.id),
+      first_name: userData.first_name || undefined,
+      username: userData.username || undefined,
+      balance: parseFloat(userData.balance || "0"),
+      lastSeenAt: parseInt(userData.lastSeenAt || "0"),
+      createdAt: parseInt(userData.createdAt || "0")
+    };
+  } catch (error) {
+    console.error("Error getting user:", error);
+    return null;
+  }
+}
+
 export async function ensureUser(u: { id: number; first_name?: string; username?: string }) {
   const r = redis();
   const key = kUser(u.id);
   
   try {
-    // Проверяем существующего пользователя
-    const exists = await r.hexists(key, "id");
+    const exists = await userExists(u.id);
     
     if (!exists) {
-      // Создаем нового пользователя
       await r.hset(key, {
         "id": String(u.id),
         "first_name": u.first_name || "",
         "username": u.username || "",
-        "balance": "0",
-        "lastSeenAt": String(Date.now())
+        "balance": "1000",
+        "lastSeenAt": String(Date.now()),
+        "createdAt": String(Date.now())
       });
-      console.log('New user created:', u.id);
+      console.log('New user created:', u.id, 'with initial balance 1000');
     } else {
-      // Обновляем данные существующего пользователя
-      if (u.first_name) await r.hset(key, "first_name", u.first_name);
-      if (u.username) await r.hset(key, "username", u.username);
+      const updates: Record<string, string> = {};
+      if (u.first_name) updates.first_name = u.first_name;
+      if (u.username) updates.username = u.username;
+      
+      if (Object.keys(updates).length > 0) {
+        await r.hset(key, updates);
+      }
+      
       await r.hset(key, "lastSeenAt", String(Date.now()));
-      console.log('User updated:', u.id);
     }
   } catch (error) {
     console.error("Error ensuring user:", error);
@@ -119,7 +160,6 @@ export async function getBalance(userId: number): Promise<number> {
   try {
     const v = await redis().hget(kUser(userId), "balance");
     const balance = v ? Number(v) : 0;
-    console.log('Retrieved balance for user', userId, ':', balance);
     return balance;
   } catch (error) {
     console.error("Error getting balance:", error);
@@ -131,37 +171,52 @@ export async function addBalance(userId: number, delta: number): Promise<void> {
   try {
     console.log('Adding balance to user:', userId, 'delta:', delta);
     
-    const currentBalance = await getBalance(userId);
-    console.log('Current balance before:', currentBalance);
+    const result = await redis().hincrbyfloat(kUser(userId), "balance", delta);
+    const newBalance = parseFloat(result);
     
-    await redis().hincrbyfloat(kUser(userId), "balance", delta);
+    if (newBalance < 0) {
+      await redis().hincrbyfloat(kUser(userId), "balance", -delta);
+      throw new Error("Insufficient balance");
+    }
     
-    const newBalance = await getBalance(userId);
     console.log('New balance after:', newBalance);
-    
   } catch (error) {
     console.error("Error adding balance:", error);
     throw error;
   }
 }
 
-/** История пользователя (список недавних событий: депы/выводы/ставки) */
-export async function getUserHistory(userId: number): Promise<any[]> {
+export async function getUserHistory(userId: number, limit: number = 50): Promise<any[]> {
   try {
-    const raw = await redis().lrange(kHist(userId), 0, 99);
+    const raw = await redis().lrange(kHist(userId), 0, limit - 1);
     return raw.map((s) => {
-      try { return JSON.parse(s); } catch { return null; }
-    }).filter(Boolean);
+      try { 
+        const item = JSON.parse(s);
+        item.userId = userId;
+        return item;
+      } catch { 
+        return null; 
+      }
+    }).filter(Boolean).reverse();
   } catch (error) {
     console.error("Error getting user history:", error);
     return [];
   }
 }
 
-/** Пуш ставки в историю */
 export async function pushBet(userId: number, bet: BetRecord) {
   try {
-    await pushHistory(userId, { t: "bet", ...bet });
+    await pushHistory(userId, { 
+      type: "bet",
+      id: bet.id,
+      amount: bet.amount,
+      payout: bet.payout,
+      rolled: bet.rolled,
+      chance: bet.chance,
+      dir: bet.dir,
+      win: bet.win,
+      createdAt: bet.createdAt
+    });
   } catch (error) {
     console.error("Error pushing bet:", error);
   }
@@ -192,7 +247,11 @@ export async function createDepositRequest(
     const r = redis();
     await setJSON(kDep(dep.id), dep);
     await r.zadd(Z_DEPS_PENDING, dep.createdAt, dep.id);
-    await pushHistory(userId, { t: "dep_pending", id: dep.id, amount: dep.amount });
+    await pushHistory(userId, { 
+      type: "deposit_pending", 
+      id: dep.id, 
+      amount: dep.amount 
+    });
     
     console.log('Deposit created successfully:', dep.id);
     return dep;
@@ -205,7 +264,6 @@ export async function createDepositRequest(
 export async function getDeposit(id: string): Promise<Deposit | null> {
   try {
     const deposit = await getJSON<Deposit>(kDep(id));
-    console.log('Retrieved deposit:', id, deposit ? 'found' : 'not found');
     return deposit;
   } catch (error) {
     console.error("Error getting deposit:", error);
@@ -220,17 +278,22 @@ export async function approveDeposit(dep: Deposit): Promise<void> {
   }
   
   try {
-    console.log('Approving deposit in store:', dep.id, 'for user:', dep.userId, 'amount:', dep.amount);
+    console.log('Approving deposit:', dep.id, 'for user:', dep.userId, 'amount:', dep.amount);
     
     dep.status = "approved";
     dep.approvedAt = Date.now();
     await setJSON(kDep(dep.id), dep);
     await redis().zrem(Z_DEPS_PENDING, dep.id);
-    await pushHistory(dep.userId, { t: "dep_approved", id: dep.id, amount: dep.amount });
+    await addBalance(dep.userId, dep.amount);
+    await pushHistory(dep.userId, { 
+      type: "deposit_approved", 
+      id: dep.id, 
+      amount: dep.amount 
+    });
     
-    console.log('Deposit approved in store successfully:', dep.id);
+    console.log('Deposit approved successfully:', dep.id);
   } catch (error) {
-    console.error("Error approving deposit in store:", error);
+    console.error("Error approving deposit:", error);
     throw error;
   }
 }
@@ -248,7 +311,11 @@ export async function declineDeposit(dep: Deposit): Promise<void> {
     dep.declinedAt = Date.now();
     await setJSON(kDep(dep.id), dep);
     await redis().zrem(Z_DEPS_PENDING, dep.id);
-    await pushHistory(dep.userId, { t: "dep_declined", id: dep.id, amount: dep.amount });
+    await pushHistory(dep.userId, { 
+      type: "deposit_declined", 
+      id: dep.id, 
+      amount: dep.amount 
+    });
     
     console.log('Deposit declined successfully:', dep.id);
   } catch (error) {
@@ -270,7 +337,6 @@ export async function listPendingDeposits(limit = 50): Promise<Deposit[]> {
     const out: Deposit[] = [];
     rows.forEach(([, s]) => { if (s) try { out.push(JSON.parse(s)); } catch {} });
     
-    console.log('Found pending deposits:', out.length);
     return out;
   } catch (error) {
     console.error("Error listing pending deposits:", error);
@@ -287,7 +353,6 @@ export async function createWithdrawRequest(
   const amt = Math.floor(Number(amount || 0));
   if (!Number.isFinite(amt) || amt <= 0) throw new Error("bad amount");
 
-  // резерв — сразу вычитаем
   const bal = await getBalance(userId);
   if (bal < amt) throw new Error("not enough balance");
 
@@ -306,7 +371,11 @@ export async function createWithdrawRequest(
     const r = redis();
     await setJSON(kWd(wd.id), wd);
     await r.zadd(Z_WDS_PENDING, wd.createdAt, wd.id);
-    await pushHistory(userId, { t: "wd_pending", id: wd.id, amount: wd.amount });
+    await pushHistory(userId, { 
+      type: "withdraw_pending", 
+      id: wd.id, 
+      amount: wd.amount 
+    });
     return wd;
   } catch (error) {
     console.error("Error creating withdraw:", error);
@@ -331,7 +400,11 @@ export async function approveWithdraw(wd: Withdraw): Promise<void> {
     wd.approvedAt = Date.now();
     await setJSON(kWd(wd.id), wd);
     await redis().zrem(Z_WDS_PENDING, wd.id);
-    await pushHistory(wd.userId, { t: "wd_approved", id: wd.id, amount: wd.amount });
+    await pushHistory(wd.userId, { 
+      type: "withdraw_approved", 
+      id: wd.id, 
+      amount: wd.amount 
+    });
   } catch (error) {
     console.error("Error approving withdraw:", error);
     throw error;
@@ -346,9 +419,12 @@ export async function declineWithdraw(wd: Withdraw): Promise<void> {
     wd.declinedAt = Date.now();
     await setJSON(kWd(wd.id), wd);
     await redis().zrem(Z_WDS_PENDING, wd.id);
-    // вернуть резерв
     await addBalance(wd.userId, wd.amount);
-    await pushHistory(wd.userId, { t: "wd_declined", id: wd.id, amount: wd.amount });
+    await pushHistory(wd.userId, { 
+      type: "withdraw_declined", 
+      id: wd.id, 
+      amount: wd.amount 
+    });
   } catch (error) {
     console.error("Error declining withdraw:", error);
     throw error;
@@ -374,9 +450,7 @@ export async function listPendingWithdrawals(limit = 50): Promise<Withdraw[]> {
   }
 }
 
-const kNonce = (id: number) => `nonce:${id}`;
-
-/** Текущий nonce пользователя (0 по умолчанию) */
+/** ---------- Nonce management ---------- */
 export async function getNonce(userId: number): Promise<number> {
   try {
     const s = await redis().get(kNonce(userId));
@@ -387,12 +461,53 @@ export async function getNonce(userId: number): Promise<number> {
   }
 }
 
-/** Увеличить nonce и вернуть новое значение (INCR: 1,2,3,...) */
 export async function incNonce(userId: number): Promise<number> {
   try {
     return await redis().incr(kNonce(userId));
   } catch (error) {
     console.error("Error incrementing nonce:", error);
     throw error;
+  }
+}
+
+/** ---------- Utility functions ---------- */
+export async function getUserStats(userId: number): Promise<{
+  totalDeposited: number;
+  totalWithdrawn: number;
+  netProfit: number;
+  totalGames: number;
+  wins: number;
+  losses: number;
+}> {
+  try {
+    const history = await getUserHistory(userId, 1000);
+    
+    const deposits = history.filter(item => item.type?.includes('deposit_approved'));
+    const withdrawals = history.filter(item => item.type?.includes('withdraw_approved'));
+    const bets = history.filter(item => item.type === 'bet');
+    
+    const totalDeposited = deposits.reduce((sum, item) => sum + (item.amount || 0), 0);
+    const totalWithdrawn = withdrawals.reduce((sum, item) => sum + (item.amount || 0), 0);
+    const totalGames = bets.length;
+    const wins = bets.filter(bet => bet.win === true || bet.payout > 0).length;
+
+    return {
+      totalDeposited,
+      totalWithdrawn,
+      netProfit: totalDeposited - totalWithdrawn,
+      totalGames,
+      wins,
+      losses: totalGames - wins
+    };
+  } catch (error) {
+    console.error("Error getting user stats:", error);
+    return {
+      totalDeposited: 0,
+      totalWithdrawn: 0,
+      netProfit: 0,
+      totalGames: 0,
+      wins: 0,
+      losses: 0
+    };
   }
 }
