@@ -12,6 +12,46 @@ type BetResult = {
   error?: string;
 };
 
+// Компонент для инициализации аутентификации
+function InitAuth() {
+  useEffect(() => {
+    const initializeAuth = async () => {
+      try {
+        const tg = (window as any).Telegram?.WebApp;
+        const initData = tg?.initData;
+        
+        if (initData) {
+          const response = await fetch('/api/auth', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData }),
+          });
+          
+          const data = await response.json();
+          if (data.ok) {
+            localStorage.setItem('tg_user', JSON.stringify(data.user));
+            localStorage.setItem('tg_uid', data.uid.toString());
+            localStorage.setItem('tg_token', data.token);
+            
+            // Обновляем URL с токеном
+            if (!window.location.search.includes('token=')) {
+              const newUrl = new URL(window.location.href);
+              newUrl.searchParams.set('token', data.token);
+              window.history.replaceState({}, '', newUrl.toString());
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Auth initialization failed:', error);
+      }
+    };
+
+    initializeAuth();
+  }, []);
+
+  return null;
+}
+
 export default function Page() {
   const [balance, setBalance] = useState<number>(0);
   const [userData, setUserData] = useState<any>(null);
@@ -28,9 +68,12 @@ export default function Page() {
   // Получаем токен для API запросов
   const getAuthHeaders = () => {
     const token = localStorage.getItem('tg_token');
+    const initData = (window as any).Telegram?.WebApp?.initData;
+    
     return {
       'Content-Type': 'application/json',
-      ...(token && { 'Authorization': `Bearer ${token}` })
+      ...(token && { 'Authorization': `Bearer ${token}` }),
+      ...(initData && { 'X-Telegram-Init-Data': initData })
     };
   };
 
@@ -47,6 +90,9 @@ export default function Page() {
         setUserData(JSON.parse(savedUser));
         setUid(Number(savedUid));
         await fetchBalance();
+      } else {
+        // Если нет сохраненных данных, пытаемся аутентифицироваться
+        await reauthenticate();
       }
     } catch (error) {
       console.error('Error loading user data:', error);
@@ -93,13 +139,6 @@ export default function Page() {
           setUserData(data.user);
           setUid(data.uid);
           setBalance(data.balance);
-          
-          // Обновляем URL с токеном
-          if (!window.location.search.includes('token=')) {
-            const newUrl = new URL(window.location.href);
-            newUrl.searchParams.set('token', data.token);
-            window.history.replaceState({}, '', newUrl.toString());
-          }
         }
       }
     } catch (error) {
@@ -116,19 +155,10 @@ export default function Page() {
     setMessage('');
 
     try {
-      const tg = (window as any).Telegram?.WebApp;
-      const initData = tg?.initData;
-
-      if (!initData) {
-        setMessage('Ошибка авторизации');
-        return;
-      }
-
       const response = await fetch('/api/bet', {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({
-          initData,
           amount: betAmount,
           chance: betChance,
           dir: betDirection,
@@ -232,6 +262,7 @@ export default function Page() {
   if (!uid) {
     return (
       <main className="center">
+        <InitAuth />
         <div className="card">Загрузка...</div>
       </main>
     );
@@ -239,6 +270,8 @@ export default function Page() {
 
   return (
     <main className="container">
+      <InitAuth />
+      
       {/* Шапка с балансом */}
       <div className="card lift">
         <div className="row between">
