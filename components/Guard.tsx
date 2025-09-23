@@ -9,12 +9,27 @@ export default function Guard({ children }: { children: React.ReactNode }) {
     checkAuthStatus();
   }, []);
 
-  const checkAuthStatus = () => {
-    // Проверяем есть ли сохраненная авторизация
-    const savedAuth = localStorage.getItem('telegram_authenticated');
-    if (savedAuth === 'true') {
-      setIsAuthenticated(true);
+  const checkAuthStatus = async () => {
+    try {
+      // Проверяем авторизацию на сервере
+      const response = await fetch('/api/balance');
+      if (response.ok) {
+        const data = await response.json();
+        if (data.ok) {
+          setIsAuthenticated(true);
+          localStorage.setItem('telegram_authenticated', 'true');
+          localStorage.setItem('telegram_uid', data.uid.toString());
+          setIsLoading(false);
+          return;
+        }
+      }
+    } catch (error) {
+      console.log('Server auth check failed');
     }
+
+    // Fallback: проверяем localStorage
+    const savedAuth = localStorage.getItem('telegram_authenticated');
+    setIsAuthenticated(savedAuth === 'true');
     setIsLoading(false);
   };
 
@@ -26,7 +41,7 @@ export default function Guard({ children }: { children: React.ReactNode }) {
         alignItems: 'center', 
         height: '100vh' 
       }}>
-        <div>Загрузка...</div>
+        <div>Проверка авторизации...</div>
       </div>
     );
   }
@@ -56,7 +71,7 @@ export default function Guard({ children }: { children: React.ReactNode }) {
             marginTop: '10px'
           }}
         >
-          Обновить страницу
+          Попробовать снова
         </button>
       </div>
     );

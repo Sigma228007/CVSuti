@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { extractUserFromInitData, writeUidCookie } from '@/lib/session';
+import { ensureUser, getBalance } from '@/lib/store';
 
 export async function POST(req: NextRequest) {
   try {
@@ -8,24 +10,39 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: 'initData required' });
     }
 
-    const urlParams = new URLSearchParams(initData);
-    const userStr = urlParams.get('user');
-    let userData = { id: 999217382, first_name: 'Saul' }; // дефолтные значения
+    // Извлекаем пользователя из initData
+    const userResult = extractUserFromInitData(initData, process.env.BOT_TOKEN);
     
-    if (userStr) {
-      try {
-        userData = JSON.parse(decodeURIComponent(userStr));
-      } catch (e) {}
+    if (!userResult.ok) {
+      return NextResponse.json({ ok: false, error: 'Invalid initData' });
     }
 
-    return NextResponse.json({ 
+    const { id: uid, user: userData } = userResult;
+
+    // Создаем/обновляем пользователя в базе
+    await ensureUser({
+      id: uid,
+      first_name: userData.first_name,
+      username: userData.username
+    });
+
+    // Получаем баланс
+    const balance = await getBalance(uid);
+
+    const response = NextResponse.json({ 
       ok: true, 
-      uid: userData.id,
-      balance: 1000, // временно
+      uid,
+      balance,
       user: userData
     });
+
+    // Устанавливаем cookie
+    writeUidCookie(response, uid);
+
+    return response;
     
   } catch (error) {
+    console.error('Auth error:', error);
     return NextResponse.json({ ok: false, error: 'Server error' });
   }
 }

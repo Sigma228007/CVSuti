@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import InitAuth from "@/components/InitAuth";
 import Guard from "@/components/Guard";
+import "./globals.css";
 
 export const metadata: Metadata = {
   title: "GVSuti",
