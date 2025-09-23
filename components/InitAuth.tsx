@@ -32,34 +32,18 @@ export default function InitAuth() {
             localStorage.setItem('telegram_authenticated', 'true');
             localStorage.setItem('telegram_uid', data.uid.toString());
             
-            // Обновляем страницу для применения авторизации
-            window.location.reload();
+            // НЕ обновляем страницу - Guard сам перерендерит интерфейс
+            console.log('Auth completed successfully');
           }
         } catch (error) {
           console.error('Auth error:', error);
         }
       } else {
         console.log('No initData available');
-        // Проверяем существующую авторизацию
-        checkExistingAuth();
       }
     };
 
-    const checkExistingAuth = async () => {
-      try {
-        const response = await fetch('/api/balance');
-        if (response.ok) {
-          const data = await response.json();
-          if (data.ok) {
-            localStorage.setItem('telegram_authenticated', 'true');
-            localStorage.setItem('telegram_uid', data.uid.toString());
-          }
-        }
-      } catch (error) {
-        console.log('Not authenticated on server');
-      }
-    };
-
+    // Запускаем проверку только один раз
     checkTelegramData();
   }, []);
 

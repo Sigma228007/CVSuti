@@ -9,27 +9,17 @@ export default function Guard({ children }: { children: React.ReactNode }) {
     checkAuthStatus();
   }, []);
 
-  const checkAuthStatus = async () => {
-    try {
-      // Проверяем авторизацию на сервере
-      const response = await fetch('/api/balance');
-      if (response.ok) {
-        const data = await response.json();
-        if (data.ok) {
-          setIsAuthenticated(true);
-          localStorage.setItem('telegram_authenticated', 'true');
-          localStorage.setItem('telegram_uid', data.uid.toString());
-          setIsLoading(false);
-          return;
-        }
-      }
-    } catch (error) {
-      console.log('Server auth check failed');
-    }
-
-    // Fallback: проверяем localStorage
+  const checkAuthStatus = () => {
+    // Простая проверка localStorage - без серверных запросов
     const savedAuth = localStorage.getItem('telegram_authenticated');
-    setIsAuthenticated(savedAuth === 'true');
+    const savedUid = localStorage.getItem('telegram_uid');
+    
+    if (savedAuth === 'true' && savedUid) {
+      setIsAuthenticated(true);
+    } else {
+      setIsAuthenticated(false);
+    }
+    
     setIsLoading(false);
   };
 
@@ -59,6 +49,9 @@ export default function Guard({ children }: { children: React.ReactNode }) {
       }}>
         <h2>Требуется авторизация</h2>
         <p>Пожалуйста, войдите через Telegram</p>
+        <div style={{ marginTop: '10px', color: '#9aa9bd', fontSize: '14px' }}>
+          Если вы уже авторизованы, попробуйте обновить страницу
+        </div>
         <button 
           onClick={() => window.location.reload()}
           style={{
@@ -71,7 +64,7 @@ export default function Guard({ children }: { children: React.ReactNode }) {
             marginTop: '10px'
           }}
         >
-          Попробовать снова
+          Обновить страницу
         </button>
       </div>
     );
