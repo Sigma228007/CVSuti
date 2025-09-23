@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { extractUserFromInitData, writeUidCookie } from '@/lib/session';
+import { extractUserFromInitData, generateToken } from '@/lib/session';
 import { ensureUser, getBalance } from '@/lib/store';
 
 export async function POST(req: NextRequest) {
@@ -9,44 +9,37 @@ export async function POST(req: NextRequest) {
     if (!initData) {
       return NextResponse.json({ 
         ok: false, 
-        error: 'initData required',
-        requireTelegram: true 
+        error: 'initData required'
       });
     }
 
-    // Извлекаем пользователя из initData
     const userResult = extractUserFromInitData(initData, process.env.BOT_TOKEN);
     
-    if (!userResult.ok) {
+    if (!userResult.ok || !userResult.verified) {
       return NextResponse.json({ 
         ok: false, 
-        error: 'Invalid initData' 
+        error: 'Invalid or unverified initData' 
       });
     }
 
     const { id: uid, user: userData } = userResult;
 
-    // Создаем/обновляем пользователя в базе
     await ensureUser({
       id: uid,
       first_name: userData.first_name,
       username: userData.username
     });
 
-    // Получаем актуальный баланс
     const balance = await getBalance(uid);
+    const token = generateToken(uid);
 
-    const response = NextResponse.json({ 
+    return NextResponse.json({ 
       ok: true, 
       uid,
       balance,
-      user: userData
+      user: userData,
+      token // Отправляем токен клиенту
     });
-
-    // Устанавливаем cookie для серверных запросов
-    writeUidCookie(response, uid);
-
-    return response;
     
   } catch (error) {
     console.error('Auth error:', error);

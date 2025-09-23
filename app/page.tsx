@@ -25,6 +25,15 @@ export default function Page() {
   const [betDirection, setBetDirection] = useState<'more' | 'less'>('more');
   const [lastBetResult, setLastBetResult] = useState<BetResult | null>(null);
 
+  // Получаем токен для API запросов
+  const getAuthHeaders = () => {
+    const token = localStorage.getItem('tg_token');
+    return {
+      'Content-Type': 'application/json',
+      ...(token && { 'Authorization': `Bearer ${token}` })
+    };
+  };
+
   useEffect(() => {
     loadUserData();
   }, []);
@@ -47,8 +56,9 @@ export default function Page() {
   const fetchBalance = async () => {
     try {
       const response = await fetch('/api/balance', {
-        credentials: 'include' // Важно: включаем cookies
+        headers: getAuthHeaders()
       });
+      
       if (response.ok) {
         const data = await response.json();
         if (data.ok) {
@@ -79,9 +89,17 @@ export default function Page() {
         if (data.ok) {
           localStorage.setItem('tg_user', JSON.stringify(data.user));
           localStorage.setItem('tg_uid', data.uid.toString());
+          localStorage.setItem('tg_token', data.token);
           setUserData(data.user);
           setUid(data.uid);
           setBalance(data.balance);
+          
+          // Обновляем URL с токеном
+          if (!window.location.search.includes('token=')) {
+            const newUrl = new URL(window.location.href);
+            newUrl.searchParams.set('token', data.token);
+            window.history.replaceState({}, '', newUrl.toString());
+          }
         }
       }
     } catch (error) {
@@ -108,7 +126,7 @@ export default function Page() {
 
       const response = await fetch('/api/bet', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           initData,
           amount: betAmount,
@@ -154,8 +172,7 @@ export default function Page() {
     try {
       const response = await fetch('/api/deposit/create', {
         method: 'POST',
-        credentials: 'include', // Важно: cookies
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ amount }),
       });
 
@@ -164,7 +181,7 @@ export default function Page() {
       if (data.ok) {
         window.location.href = `/pay/${data.deposit.id}?url=${encodeURIComponent(data.payUrl)}`;
       } else {
-        if (data.error === 'no session') {
+        if (data.error === 'unauthorized') {
           await reauthenticate();
           setMessage('Сессия устарела. Попробуйте еще раз.');
         } else {
@@ -190,8 +207,7 @@ export default function Page() {
     try {
       const response = await fetch('/api/withdraw/create', {
         method: 'POST',
-        credentials: 'include', // Важно: cookies
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ 
           amount,
           details: { method: 'standard' }

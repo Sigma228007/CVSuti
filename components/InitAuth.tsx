@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import { generateToken } from '@/lib/session';
 
 export default function InitAuth() {
   useEffect(() => {
@@ -24,16 +25,28 @@ export default function InitAuth() {
           
           if (data.ok) {
             console.log('User authenticated successfully');
-            // Сохраняем минимальные данные для Guard
+            
+            // Сохраняем данные
             localStorage.setItem('tg_auth', 'true');
             localStorage.setItem('tg_uid', data.uid.toString());
             localStorage.setItem('tg_user', JSON.stringify(data.user));
+            localStorage.setItem('tg_token', data.token);
+            
+            // Добавляем токен в URL для API запросов
+            if (!window.location.search.includes('token=')) {
+              const newUrl = new URL(window.location.href);
+              newUrl.searchParams.set('token', data.token);
+              window.history.replaceState({}, '', newUrl.toString());
+            }
           }
         } else {
           console.log('No Telegram WebApp detected');
-          // Проверяем существующую авторизацию
-          const existingAuth = localStorage.getItem('tg_auth');
-          if (existingAuth !== 'true') {
+          // Проверяем существующий токен
+          const existingToken = localStorage.getItem('tg_token');
+          if (existingToken) {
+            localStorage.setItem('tg_auth', 'true');
+          } else {
+            localStorage.removeItem('tg_auth');
             localStorage.removeItem('tg_uid');
             localStorage.removeItem('tg_user');
           }

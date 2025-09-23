@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { clearUidCookieFromResponse } from "@/lib/session";
 
 export async function POST() {
-  const res = NextResponse.json({ ok: true, message: "Logged out successfully" });
-  clearUidCookieFromResponse(res);
-  
-  return res;
+  // В новой системе просто возвращаем успех
+  // Клиент сам очистит localStorage
+  return NextResponse.json({ 
+    ok: true, 
+    message: "Logged out successfully" 
+  });
 }

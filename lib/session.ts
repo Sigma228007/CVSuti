@@ -1,73 +1,62 @@
-import { NextRequest, NextResponse } from "next/server";
 import { verifyInitData } from "@/lib/sign";
 
-export const UID_COOKIE = "uid";
-export const UID_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
+export const TOKEN_KEY = "auth_token";
 
-export function readUidFromCookies(req: NextRequest): number | null {
+// Генерируем простой JWT токен
+export function generateToken(uid: number): string {
+  const payload = {
+    uid,
+    exp: Math.floor(Date.now() / 1000) + (60 * 60 * 24 * 30) // 30 дней
+  };
+  const base64Payload = btoa(JSON.stringify(payload));
+  return `eyJ.${base64Payload}.signature`; // Упрощенный JWT
+}
+
+// Проверяем токен
+export function verifyToken(token: string): number | null {
   try {
-    const c = req.cookies.get(UID_COOKIE);
-    if (!c || !c.value) return null;
-    const n = Number(c.value);
-    return Number.isFinite(n) && n > 0 ? n : null;
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    
+    const payload = JSON.parse(atob(parts[1]));
+    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+    
+    return payload.uid;
   } catch {
     return null;
   }
 }
 
-export function writeUidCookie(res: NextResponse, uid: number) {
-  try {
-    res.cookies.set({
-      name: UID_COOKIE,
-      value: String(uid),
-      httpOnly: true,
-      path: "/",
-      maxAge: UID_COOKIE_MAX_AGE,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-    });
-  } catch {}
-}
-
-export function clearUidCookieFromResponse(res: NextResponse) {
-  try {
-    res.cookies.delete(UID_COOKIE);
-  } catch {}
-}
-
-export function isProbablyTelegram(req: NextRequest): boolean {
-  try {
-    const ua = (req.headers.get("user-agent") || "").toLowerCase();
-    if (ua.includes("telegram")) return true;
-    if (req.headers.get("x-telegram-bot-api-user-id")) return true;
-    
-    const url = new URL(req.url);
-    return !!(
-      url.searchParams.get("tgWebAppData") || 
-      url.searchParams.get("initData") ||
-      url.searchParams.get("tgWebAppStartParam")
-    );
-  } catch {
-    return false;
+// Получаем UID из запроса (из заголовка или токена)
+export function getUidFromRequest(headers: Headers): number | null {
+  // Пробуем из заголовка
+  const authHeader = headers.get('authorization');
+  if (authHeader?.startsWith('Bearer ')) {
+    const token = authHeader.slice(7);
+    return verifyToken(token);
   }
+  
+  // Пробуем из query параметра (для WebApp)
+  const url = new URL(headers.get('referer') || '');
+  const tokenFromUrl = url.searchParams.get('token');
+  if (tokenFromUrl) {
+    return verifyToken(tokenFromUrl);
+  }
+  
+  return null;
 }
 
-export function isAdmin(uid: number | null | undefined): boolean {
-  if (!uid) return false;
-  const adminIds = (process.env.ADMIN_IDS || "").split(",")
-    .map(id => Number(id.trim()))
-    .filter(id => id > 0);
-  return adminIds.includes(uid);
+// Для совместимости со старым кодом
+export function readUidFromCookies(req: { headers: Headers }): number | null {
+  return getUidFromRequest(req.headers);
 }
 
 export function extractUserFromInitData(initData: string, botToken?: string) {
   if (!initData) return { ok: false as const };
 
   try {
-    // Пробуем разные форматы initData
     let parsedData: any = null;
     
-    // 1. Пробуем как URLSearchParams
     if (initData.includes('=') && initData.includes('&')) {
       const params = new URLSearchParams(initData);
       const userStr = params.get('user') || params.get('user_json');
@@ -78,14 +67,12 @@ export function extractUserFromInitData(initData: string, botToken?: string) {
       }
     }
     
-    // 2. Пробуем как JSON строку
     if (!parsedData) {
       try {
         parsedData = JSON.parse(initData);
       } catch {}
     }
 
-    // 3. Пробуем как raw data
     if (!parsedData && initData.includes('user=')) {
       const userMatch = initData.match(/user=([^&]*)/);
       if (userMatch && userMatch[1]) {
@@ -97,7 +84,6 @@ export function extractUserFromInitData(initData: string, botToken?: string) {
 
     if (!parsedData || !parsedData.id) return { ok: false };
 
-    // Валидация подписи
     let verified = false;
     if (botToken) {
       try {
@@ -117,4 +103,12 @@ export function extractUserFromInitData(initData: string, botToken?: string) {
   } catch {
     return { ok: false as const };
   }
+}
+
+export function isAdmin(uid: number | null | undefined): boolean {
+  if (!uid) return false;
+  const adminIds = (process.env.ADMIN_IDS || "").split(",")
+    .map(id => Number(id.trim()))
+    .filter(id => id > 0);
+  return adminIds.includes(uid);
 }
