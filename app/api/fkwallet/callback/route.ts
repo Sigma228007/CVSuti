@@ -36,13 +36,11 @@ export async function POST(req: NextRequest) {
       SIGN: receivedSign
     } = params;
 
-    // Проверяем обязательные параметры
     if (!orderId || !amount || !receivedSign) {
       console.error('❌ Missing required parameters');
-      return NextResponse.json({ status: 'error', message: 'Missing parameters' }, { status: 400 });
+      return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
     }
 
-    // Генерируем ожидаемую подпись
     const expectedSign = generateSignature(MERCHANT_ID, amount, SECRET_WORD_2, orderId);
     
     console.log('Signature verification:', {
@@ -51,10 +49,9 @@ export async function POST(req: NextRequest) {
       match: receivedSign.toLowerCase() === expectedSign
     });
 
-    // Проверяем подпись
     if (receivedSign.toLowerCase() !== expectedSign) {
       console.error('❌ Invalid signature');
-      return NextResponse.json({ status: 'error', message: 'Invalid signature' }, { status: 403 });
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 403 });
     }
 
     console.log('🔍 Looking for deposit:', orderId);
@@ -62,7 +59,7 @@ export async function POST(req: NextRequest) {
     
     if (!deposit) {
       console.error('❌ Deposit not found:', orderId);
-      return NextResponse.json({ status: 'error', message: 'Deposit not found' }, { status: 404 });
+      return NextResponse.json({ error: 'Deposit not found' }, { status: 404 });
     }
 
     console.log('✅ Deposit found:', {
@@ -72,27 +69,23 @@ export async function POST(req: NextRequest) {
       status: deposit.status
     });
 
-    // Если депозит уже обработан
     if (deposit.status !== "pending") {
       console.log('ℹ️ Deposit already processed:', deposit.status);
-      return NextResponse.json({ status: 'OK' });
+      return new Response("YES");
     }
 
-    // Проверяем сумму
     const amountNum = parseFloat(amount);
     if (Math.abs(amountNum - deposit.amount) > 0.01) {
       console.error('❌ Amount mismatch:', { received: amountNum, expected: deposit.amount });
-      return NextResponse.json({ status: 'error', message: 'Amount mismatch' }, { status: 400 });
+      return NextResponse.json({ error: 'Amount mismatch' }, { status: 400 });
     }
 
-    // Одобряем депозит
-    console.log('🔄 Approving deposit...');
+    console.log('🔄 Approving deposit automatically...');
     await approveDeposit(deposit);
     await addBalance(deposit.userId, deposit.amount);
     
     console.log('✅ Deposit approved and balance updated');
 
-    // Отправляем уведомление
     try {
       await notifyUserDepositApproved(deposit);
       console.log('✅ User notified');
@@ -101,14 +94,12 @@ export async function POST(req: NextRequest) {
     }
 
     console.log('=== FREEKASSA CALLBACK END (SUCCESS) ===');
-    
-    // FreeKassa ожидает ответ в формате "YES"
     return new Response("YES");
     
   } catch (error: any) {
     console.error('💥 CALLBACK ERROR:', error);
     return NextResponse.json(
-      { status: 'error', message: error.message },
+      { error: error.message },
       { status: 500 }
     );
   }

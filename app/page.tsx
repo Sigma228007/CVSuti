@@ -33,7 +33,6 @@ function InitAuth() {
             localStorage.setItem('tg_uid', data.uid.toString());
             localStorage.setItem('tg_token', data.token);
             
-            // Обновляем URL с токеном
             if (!window.location.search.includes('token=')) {
               const newUrl = new URL(window.location.href);
               newUrl.searchParams.set('token', data.token);
@@ -59,13 +58,12 @@ export default function Page() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [message, setMessage] = useState<string>('');
   
-  // Состояния для ставок
   const [betAmount, setBetAmount] = useState<number>(100);
   const [betChance, setBetChance] = useState<number>(50);
   const [betDirection, setBetDirection] = useState<'more' | 'less'>('more');
   const [lastBetResult, setLastBetResult] = useState<BetResult | null>(null);
 
-  // Получаем токен для API запросов
+  // Получаем заголовки для API запросов
   const getAuthHeaders = () => {
     const token = localStorage.getItem('tg_token');
     const initData = (window as any).Telegram?.WebApp?.initData;
@@ -77,8 +75,45 @@ export default function Page() {
     };
   };
 
+  // Проверка статуса депозита
+  const checkDepositStatus = async (depositId: string) => {
+    try {
+      const response = await fetch(`/api/deposit/pending?id=${depositId}`, {
+        method: 'GET',
+        headers: getAuthHeaders()
+      });
+      
+      const data = await response.json();
+      if (data.ok) {
+        if (data.deposit.status === 'approved') {
+          setMessage(`✅ Баланс пополнен на ${data.deposit.amount}₽!`);
+          await fetchBalance();
+          
+          // Убираем параметр из URL
+          const newUrl = new URL(window.location.href);
+          newUrl.searchParams.delete('deposit_id');
+          window.history.replaceState({}, '', newUrl.toString());
+        } else if (data.deposit.status === 'pending') {
+          setMessage('⏳ Платеж обрабатывается...');
+          // Проверяем снова через 5 секунд
+          setTimeout(() => checkDepositStatus(depositId), 5000);
+        }
+      }
+    } catch (error) {
+      console.error('Error checking deposit status:', error);
+    }
+  };
+
   useEffect(() => {
     loadUserData();
+    
+    // Проверяем, если мы вернулись с оплаты
+    const urlParams = new URLSearchParams(window.location.search);
+    const depositId = urlParams.get('deposit_id');
+    
+    if (depositId) {
+      checkDepositStatus(depositId);
+    }
   }, []);
 
   const loadUserData = async () => {
@@ -91,7 +126,6 @@ export default function Page() {
         setUid(Number(savedUid));
         await fetchBalance();
       } else {
-        // Если нет сохраненных данных, пытаемся аутентифицироваться
         await reauthenticate();
       }
     } catch (error) {
@@ -169,9 +203,8 @@ export default function Page() {
       setLastBetResult(result);
 
       if (result.ok) {
-        await fetchBalance(); // Обновляем баланс
+        await fetchBalance();
         
-        // Виброотклик в Telegram
         try {
           const tg = (window as any).Telegram?.WebApp;
           if (result.result === 'win') {
@@ -209,7 +242,12 @@ export default function Page() {
       const data = await response.json();
 
       if (data.ok) {
-        window.location.href = `/pay/${data.deposit.id}?url=${encodeURIComponent(data.payUrl)}`;
+        // Добавляем deposit_id в URL для отслеживания статуса
+        const payUrl = new URL(data.payUrl);
+        const returnUrl = new URL('/fk/success', window.location.origin);
+        returnUrl.searchParams.set('deposit_id', data.deposit.id);
+        
+        window.location.href = `/pay/${data.deposit.id}?url=${encodeURIComponent(data.payUrl)}&return=${encodeURIComponent(returnUrl.toString())}`;
       } else {
         if (data.error === 'unauthorized') {
           await reauthenticate();

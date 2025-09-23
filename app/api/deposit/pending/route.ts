@@ -10,25 +10,29 @@ function isAdmin(uid: number | null) {
   return uid != null && ids.includes(uid);
 }
 
-/** Список ожидающих депозитов (для админа). */
+/** Список ожидающих депозитов (для админа) */
 export async function POST(req: NextRequest) {
   try {
     const uid = readUidFromCookies(req);
-    if (!isAdmin(uid)) return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+    if (!isAdmin(uid)) {
+      return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+    }
 
     const { limit } = (await req.json().catch(() => ({}))) as { limit?: number };
     const pending = await listPendingDeposits(Math.max(1, Math.min(200, limit || 50)));
     return NextResponse.json({ ok: true, pending });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || "pending failed" }, { status: 500 });
+    return NextResponse.json({ 
+      ok: false, 
+      error: e?.message || "pending failed" 
+    }, { status: 500 });
   }
 }
 
 /** Проверка статуса депозита (для пользователя) */
 export async function GET(req: NextRequest) {
   try {
-    // ПЕРЕДАЕМ ЗАГОЛОВКИ, а не весь request
-    const uid = getUidFromRequest(req.headers); // ← ИСПРАВЛЕНО
+    const uid = getUidFromRequest(req.headers);
     if (!uid) {
       return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
     }
@@ -46,7 +50,6 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Deposit not found" }, { status: 404 });
     }
 
-    // Проверяем, что депозит принадлежит пользователю
     if (deposit.userId !== uid) {
       return NextResponse.json({ ok: false, error: "Access denied" }, { status: 403 });
     }

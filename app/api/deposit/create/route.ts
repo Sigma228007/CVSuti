@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUidFromRequest } from "@/lib/session";
 import { createDepositRequest } from "@/lib/store";
 import crypto from "crypto";
-import { notifyDepositAdmin } from "@/lib/notify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,9 +15,9 @@ export async function POST(req: NextRequest) {
     }
 
     const { amount } = await req.json();
-    const amountNum = Math.max(1, Math.floor(Number(amount || 0))); // ← Исправлено: добавил скобку
+    const amountNum = Math.max(1, Math.floor(Number(amount || 0)));
 
-    const deposit = await createDepositRequest(uid, amountNum, "fkwallet"); // ← Исправлено: "fkwallet" вместо "fwallet"
+    const deposit = await createDepositRequest(uid, amountNum, "fkwallet");
 
     const merchantId = process.env.FK_MERCHANT_ID || "";
     const secret1 = process.env.FK_SECRET_1 || "";
@@ -28,17 +27,25 @@ export async function POST(req: NextRequest) {
       [merchantId, deposit.amount, secret1, currency, deposit.id].join(":")
     ).digest("hex");
 
-    // ← Исправлено: правильный шаблон строки
     const payUrl = `https://pay.freekassa.com/?m=${merchantId}&oa=${deposit.amount}&o=${deposit.id}&currency=${currency}&s=${sign}`;
 
-    try {
-      await notifyDepositAdmin(deposit);
-    } catch (notifyError) {
-      console.error('Deposit notification error:', notifyError);
-    }
+    console.log('Deposit created:', { 
+      id: deposit.id, 
+      userId: uid, 
+      amount: deposit.amount,
+      payUrl: payUrl 
+    });
 
-    return NextResponse.json({ ok: true, deposit: deposit, payUrl }); // ← Исправлено: deposit вместо dep
+    return NextResponse.json({ 
+      ok: true, 
+      deposit: deposit, 
+      payUrl 
+    });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || "create failed" }, { status: 500 });
+    console.error('Deposit creation error:', e);
+    return NextResponse.json({ 
+      ok: false, 
+      error: e?.message || "create failed" 
+    }, { status: 500 });
   }
 }
