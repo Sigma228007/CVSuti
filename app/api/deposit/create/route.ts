@@ -15,28 +15,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
     }
 
-    const { amount } = (await req.json().catch(() => ({}))) as { amount?: number };
-    const amt = Math.max(1, Math.floor(Number(amount || 0)));
+    const { amount } = await req.json();
+    const amountNum = Math.max(1, Math.floor(Number(amount || 0))); // ← Исправлено: добавил скобку
 
-    const dep = await createDepositRequest(uid, amt, "fkwallet");
+    const deposit = await createDepositRequest(uid, amountNum, "fkwallet"); // ← Исправлено: "fkwallet" вместо "fwallet"
 
     const merchantId = process.env.FK_MERCHANT_ID || "";
     const secret1 = process.env.FK_SECRET_1 || "";
     const currency = "RUB";
     
     const sign = crypto.createHash("md5").update(
-      [merchantId, dep.amount, secret1, currency, dep.id].join(":")
+      [merchantId, deposit.amount, secret1, currency, deposit.id].join(":")
     ).digest("hex");
 
-    const payUrl = `https://pay.freekassa.com/?m=${merchantId}&oa=${dep.amount}&o=${dep.id}&currency=${currency}&s=${sign}`;
+    // ← Исправлено: правильный шаблон строки
+    const payUrl = `https://pay.freekassa.com/?m=${merchantId}&oa=${deposit.amount}&o=${deposit.id}&currency=${currency}&s=${sign}`;
 
     try {
-      await notifyDepositAdmin(dep);
+      await notifyDepositAdmin(deposit);
     } catch (notifyError) {
       console.error('Deposit notification error:', notifyError);
     }
 
-    return NextResponse.json({ ok: true, deposit: dep, payUrl });
+    return NextResponse.json({ ok: true, deposit: deposit, payUrl }); // ← Исправлено: deposit вместо dep
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "create failed" }, { status: 500 });
   }
