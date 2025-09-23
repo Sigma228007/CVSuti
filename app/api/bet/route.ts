@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
 import {
   getBalance,
   addBalance,
@@ -16,6 +15,10 @@ import {
   MAX_BET,
 } from "@/lib/config";
 import { verifyInitData } from "@/lib/sign";
+import { notifyNewBet, notifyUserBetWin, notifyUserBetLoss } from "@/lib/notify";
+
+// Добавляем правильный импорт crypto
+import crypto from "crypto";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,30 +50,38 @@ export async function POST(req: NextRequest) {
     if (!botToken) {
       return NextResponse.json({ ok: false, error: "BOT_TOKEN missing" }, { status: 500 });
     }
+    
     if (!body.initData) {
       return NextResponse.json({ ok: false, error: "no initData" }, { status: 400 });
     }
 
+    // Проверяем подпись Telegram
     const v = verifyInitData(body.initData, botToken);
     if (!v.ok || !v.user) {
       return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
     }
+    
     const userId = Number(v.user.id);
 
+    // Валидация параметров ставки
     const amount = Math.floor(Number(body.amount || 0));
     const chance = Math.max(MIN_CHANCE, Math.min(MAX_CHANCE, Math.floor(Number(body.chance || 0))));
+    
     if (!Number.isFinite(amount) || amount < MIN_BET || amount > MAX_BET) {
       return NextResponse.json({ ok: false, error: "bad amount" }, { status: 400 });
     }
+    
     if (!Number.isFinite(chance)) {
       return NextResponse.json({ ok: false, error: "bad chance" }, { status: 400 });
     }
 
+    // Проверяем баланс
     const bal = await getBalance(userId);
     if (bal < amount) {
       return NextResponse.json({ ok: false, error: "not enough balance" }, { status: 400 });
     }
 
+    // Генерируем результат
     const serverSeed = process.env.SERVER_SEED || "server_seed";
     const nonce = await incNonce(userId);
     const clientSeed = `${userId}:${nonce}`;
@@ -78,18 +89,23 @@ export async function POST(req: NextRequest) {
     const r = roll(serverSeed, clientSeed, nonce);
 
     const rolled = r.value; // 0..9999
-    const win = rolled < Math.round(chance * 100);
+    const winThreshold = Math.round(chance * 100);
+    const win = body.dir === 'more' ? rolled >= winThreshold : rolled < winThreshold;
 
+    // Расчет выплаты
     const rawPayout = Math.floor((amount * 100) / Math.max(chance, 1));
     const payout = Math.floor((rawPayout * (10000 - HOUSE_EDGE_BP)) / 10000);
 
+    // Обновляем баланс
     await addBalance(userId, -amount);
     let won = 0;
+    
     if (win) {
       won = payout;
       await addBalance(userId, won);
     }
 
+    // Сохраняем ставку в историю
     const bet: BetRecord = {
       id: `bet_${Date.now()}_${userId}`,
       userId,
@@ -98,7 +114,28 @@ export async function POST(req: NextRequest) {
       rolled,
       createdAt: Date.now(),
     };
+    
     await pushBet(userId, bet);
+
+    // Отправляем уведомления
+    try {
+      await notifyNewBet({
+        userId,
+        amount,
+        chance,
+        result: win ? 'win' : 'lose',
+        payout: won
+      });
+
+      if (win) {
+        await notifyUserBetWin(userId, amount, won);
+      } else {
+        await notifyUserBetLoss(userId, amount);
+      }
+    } catch (notifyError) {
+      console.error('Notification error:', notifyError);
+      // Не прерываем выполнение из-за ошибки уведомлений
+    }
 
     return NextResponse.json({
       ok: true,
@@ -110,7 +147,9 @@ export async function POST(req: NextRequest) {
       commit,
       balanceDelta: win ? won - amount : -amount,
     });
+    
   } catch (e: any) {
+    console.error('Bet error:', e);
     return NextResponse.json({ ok: false, error: e?.message || "bet failed" }, { status: 500 });
   }
 }

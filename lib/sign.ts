@@ -4,18 +4,24 @@ export type TgUser = { id: number; first_name?: string; username?: string };
 
 /**
  * Проверка Telegram WebApp initData.
- * Возвращает { ok: true, user } либо { ok: false }.
+ * Возвращает { ok: true, user } либо { ok: false, error }.
  */
 export function verifyInitData(
   initData: string,
   botToken: string
-): { ok: true; user: TgUser } | { ok: false } {
+): { ok: true; user: TgUser } | { ok: false; error?: string } {
   try {
-    if (!initData || !botToken) return { ok: false };
+    if (!initData || !botToken) {
+      return { ok: false, error: "Missing initData or botToken" };
+    }
 
     const params = new URLSearchParams(initData);
     const hash = params.get("hash") || "";
     params.delete("hash");
+
+    if (!hash) {
+      return { ok: false, error: "No hash in initData" };
+    }
 
     // Формируем data_check_string
     const dataCheckString = Array.from(params.entries())
@@ -29,17 +35,24 @@ export function verifyInitData(
     // Хэш
     const myHash = crypto.createHmac("sha256", secret).update(dataCheckString).digest("hex");
 
-    if (myHash !== hash) return { ok: false };
+    if (myHash !== hash) {
+      return { ok: false, error: "Hash mismatch" };
+    }
 
     const userStr = params.get("user");
-    if (!userStr) return { ok: false };
+    if (!userStr) {
+      return { ok: false, error: "No user data" };
+    }
 
-    const user = JSON.parse(userStr) as TgUser;
-    if (!user || typeof user.id !== "number") return { ok: false };
+    const user = JSON.parse(decodeURIComponent(userStr)) as TgUser;
+    
+    if (!user || typeof user.id !== "number") {
+      return { ok: false, error: "Invalid user data" };
+    }
 
     return { ok: true, user };
-  } catch {
-    return { ok: false };
+  } catch (error: any) {
+    return { ok: false, error: error.message };
   }
 }
 

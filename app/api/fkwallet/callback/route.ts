@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { getDeposit, approveDeposit, declineDeposit, addBalance } from "@/lib/store";
+import { notifyUserDepositApproved, notifyUserDepositDeclined } from "@/lib/notify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,18 +16,18 @@ function md5(s: string) {
 }
 
 function checkSign(params: Record<string, string | undefined>, secret: string) {
-  // для успеха: md5(merchant_id:amount:secret1:order_id)
-  // для фейла:   md5(merchant_id:order_id:secret2)
   const sign = (params["SIGN"] || params["sign"] || "").toLowerCase();
+  
   if (params["AMOUNT"] && secret === S1) {
     const base = `${MERCHANT}:${params["AMOUNT"]}:${S1}:${params["MERCHANT_ORDER_ID"]}`;
     return md5(base) === sign;
   }
-  // fail:
+  
   if (!params["AMOUNT"] && secret === S2) {
     const base = `${MERCHANT}:${params["MERCHANT_ORDER_ID"]}:${S2}`;
     return md5(base) === sign;
   }
+  
   return false;
 }
 
@@ -49,10 +50,19 @@ export async function POST(req: NextRequest) {
       if (!checkSign(params, S1)) {
         return NextResponse.json({ ok: false, error: "bad sign" }, { status: 403 });
       }
+      
       if (dep.status !== "approved") {
-        await approveDeposit(dep);            // отметим как approved, подвинем историю и т.п.
-        await addBalance(dep.userId, dep.amount); // начислим деньги
+        await approveDeposit(dep);
+        await addBalance(dep.userId, dep.amount);
+        
+        // Уведомление пользователю
+        try {
+          await notifyUserDepositApproved(dep);
+        } catch (notifyError) {
+          console.error('Deposit approved notification error:', notifyError);
+        }
       }
+      
       return NextResponse.json({ ok: true });
     }
 
@@ -60,9 +70,18 @@ export async function POST(req: NextRequest) {
     if (!checkSign(params, S2)) {
       return NextResponse.json({ ok: false, error: "bad sign" }, { status: 403 });
     }
+    
     if (dep.status === "pending") {
       await declineDeposit(dep);
+      
+      // Уведомление пользователю
+      try {
+        await notifyUserDepositDeclined(dep);
+      } catch (notifyError) {
+        console.error('Deposit declined notification error:', notifyError);
+      }
     }
+    
     return NextResponse.json({ ok: true });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || "callback failed" }, { status: 500 });

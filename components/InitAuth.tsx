@@ -7,43 +7,42 @@ export default function InitAuth() {
     console.log('InitAuth component mounted');
     
     const checkTelegramData = async () => {
-      const tg = (window as any).Telegram;
-      console.log('Telegram object:', tg);
-      
-      if (tg?.WebApp?.initData) {
-        console.log('WebApp available, initData:', tg.WebApp.initData);
+      try {
+        const tg = (window as any).Telegram?.WebApp;
         
-        try {
+        if (tg?.initData) {
+          console.log('Telegram WebApp detected, initData:', tg.initData);
+          
           const response = await fetch('/api/auth', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ initData: tg.WebApp.initData }),
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData: tg.initData }),
           });
           
           const data = await response.json();
           console.log('Auth response:', data);
           
           if (data.ok) {
-            console.log('User authenticated:', data.user);
-            // Сохраняем в localStorage
-            localStorage.setItem('telegram_user', JSON.stringify(data.user));
-            localStorage.setItem('telegram_authenticated', 'true');
-            localStorage.setItem('telegram_uid', data.uid.toString());
-            
-            // НЕ обновляем страницу - Guard сам перерендерит интерфейс
-            console.log('Auth completed successfully');
+            console.log('User authenticated successfully');
+            // Сохраняем минимальные данные для Guard
+            localStorage.setItem('tg_auth', 'true');
+            localStorage.setItem('tg_uid', data.uid.toString());
+            localStorage.setItem('tg_user', JSON.stringify(data.user));
           }
-        } catch (error) {
-          console.error('Auth error:', error);
+        } else {
+          console.log('No Telegram WebApp detected');
+          // Проверяем существующую авторизацию
+          const existingAuth = localStorage.getItem('tg_auth');
+          if (existingAuth !== 'true') {
+            localStorage.removeItem('tg_uid');
+            localStorage.removeItem('tg_user');
+          }
         }
-      } else {
-        console.log('No initData available');
+      } catch (error) {
+        console.error('Auth initialization error:', error);
       }
     };
 
-    // Запускаем проверку только один раз
     checkTelegramData();
   }, []);
 

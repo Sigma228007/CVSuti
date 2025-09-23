@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { readUidFromCookies } from "@/lib/session";
 import { createDepositRequest } from "@/lib/store";
+import { notifyDepositAdmin } from "@/lib/notify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,7 +25,14 @@ export async function POST(req: NextRequest) {
     const md5 = (s: string) => crypto.createHash("md5").update(s).digest("hex");
     const sign = md5(`${merchId}:${amt}:${s1}:${currency}:${orderId}`);
 
-    const url = `https://pay.freekassa.ru/?m=${merchId}&oa=${amt}&o=${orderId}&s=${sign}&currency=${currency}`;
+    const url = `https://pay.freekassa.com/?m=${merchId}&oa=${amt}&o=${orderId}&s=${sign}&currency=${currency}`;
+
+    // Уведомление админу
+    try {
+      await notifyDepositAdmin(dep);
+    } catch (notifyError) {
+      console.error('Deposit notification error:', notifyError);
+    }
 
     return NextResponse.json({ ok: true, url, orderId });
   } catch (e: any) {

@@ -7,14 +7,21 @@ export async function POST(req: NextRequest) {
     const { initData } = await req.json();
     
     if (!initData) {
-      return NextResponse.json({ ok: false, error: 'initData required' });
+      return NextResponse.json({ 
+        ok: false, 
+        error: 'initData required',
+        requireTelegram: true 
+      });
     }
 
-    // Извлекаем пользователя из initData
+    // Извлекаем пользователя из initData с проверкой подписи
     const userResult = extractUserFromInitData(initData, process.env.BOT_TOKEN);
     
-    if (!userResult.ok) {
-      return NextResponse.json({ ok: false, error: 'Invalid initData' });
+    if (!userResult.ok || !userResult.verified) {
+      return NextResponse.json({ 
+        ok: false, 
+        error: 'Invalid or unverified initData' 
+      });
     }
 
     const { id: uid, user: userData } = userResult;
@@ -26,7 +33,7 @@ export async function POST(req: NextRequest) {
       username: userData.username
     });
 
-    // Получаем баланс
+    // Получаем актуальный баланс
     const balance = await getBalance(uid);
 
     const response = NextResponse.json({ 
@@ -36,13 +43,16 @@ export async function POST(req: NextRequest) {
       user: userData
     });
 
-    // Устанавливаем cookie
+    // Устанавливаем cookie для серверных запросов
     writeUidCookie(response, uid);
 
     return response;
     
   } catch (error) {
     console.error('Auth error:', error);
-    return NextResponse.json({ ok: false, error: 'Server error' });
+    return NextResponse.json({ 
+      ok: false, 
+      error: 'Server error during authentication' 
+    });
   }
 }

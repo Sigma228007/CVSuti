@@ -11,61 +11,65 @@ export default function Guard({ children }: { children: React.ReactNode }) {
 
   const checkAuthStatus = () => {
     // Простая проверка localStorage - без серверных запросов
-    const savedAuth = localStorage.getItem('telegram_authenticated');
-    const savedUid = localStorage.getItem('telegram_uid');
+    const savedAuth = localStorage.getItem('tg_auth');
+    const savedUid = localStorage.getItem('tg_uid');
     
-    if (savedAuth === 'true' && savedUid) {
-      setIsAuthenticated(true);
-    } else {
-      setIsAuthenticated(false);
-    }
-    
+    // Явно преобразуем в boolean
+    const authenticated = savedAuth === 'true' && Boolean(savedUid);
+    setIsAuthenticated(authenticated);
     setIsLoading(false);
   };
 
   if (isLoading) {
     return (
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height: '100vh' 
-      }}>
-        <div>Проверка авторизации...</div>
+      <div className="center">
+        <div className="card" style={{ textAlign: 'center', padding: '40px' }}>
+          <div className="h2">Проверка авторизации...</div>
+          <div className="sub">Загрузка приложения</div>
+        </div>
       </div>
     );
   }
 
   if (!isAuthenticated) {
     return (
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height: '100vh',
-        flexDirection: 'column',
-        padding: '20px',
-        textAlign: 'center'
-      }}>
-        <h2>Требуется авторизация</h2>
-        <p>Пожалуйста, войдите через Telegram</p>
-        <div style={{ marginTop: '10px', color: '#9aa9bd', fontSize: '14px' }}>
-          Если вы уже авторизованы, попробуйте обновить страницу
+      <div className="center">
+        <div className="card" style={{ textAlign: 'center', maxWidth: '400px' }}>
+          <div className="h2" style={{ color: '#f59e0b', marginBottom: '16px' }}>
+            Требуется авторизация
+          </div>
+          <div className="sub" style={{ marginBottom: '20px' }}>
+            Для доступа к приложению необходимо войти через Telegram
+          </div>
+          
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+            <button 
+              className="btn"
+              onClick={() => {
+                // Пробуем открыть в Telegram
+                const tg = (window as any).Telegram?.WebApp;
+                if (tg) {
+                  tg.expand();
+                  window.location.reload();
+                } else {
+                  window.location.reload();
+                }
+              }}
+            >
+              Войти через Telegram
+            </button>
+            <button 
+              className="btn-outline"
+              onClick={() => window.location.reload()}
+            >
+              Обновить страницу
+            </button>
+          </div>
+          
+          <div className="info" style={{ marginTop: '16px' }}>
+            <small>Откройте приложение через бота в Telegram для автоматической авторизации</small>
+          </div>
         </div>
-        <button 
-          onClick={() => window.location.reload()}
-          style={{
-            padding: '10px 20px',
-            backgroundColor: '#007bff',
-            color: 'white',
-            border: 'none',
-            borderRadius: '5px',
-            cursor: 'pointer',
-            marginTop: '10px'
-          }}
-        >
-          Обновить страницу
-        </button>
       </div>
     );
   }

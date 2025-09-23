@@ -6,12 +6,14 @@ export async function POST(req: NextRequest) {
     const body = await req.text();
     const update = JSON.parse(body);
     
+    console.log('Webhook received:', update.update_id);
+    
     await bot.handleUpdate(update);
     
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, processed: true });
   } catch (error) {
     console.error('Webhook error:', error);
-    return NextResponse.json({ error: 'Webhook failed' }, { status: 500 });
+    return NextResponse.json({ error: 'Webhook processing failed' }, { status: 500 });
   }
 }
 

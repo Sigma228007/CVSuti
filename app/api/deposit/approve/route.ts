@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readUidFromCookies, isAdmin } from "@/lib/session";
 import { getDeposit, approveDeposit, addBalance } from "@/lib/store";
+import { notifyUserDepositApproved } from "@/lib/notify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,8 +19,17 @@ export async function POST(req: NextRequest) {
     const dep = await getDeposit(id);
     if (!dep) return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
 
-    await approveDeposit(dep);
-    await addBalance(dep.userId, dep.amount);
+    if (dep.status === "pending") {
+      await approveDeposit(dep);
+      await addBalance(dep.userId, dep.amount);
+      
+      // Уведомление пользователю
+      try {
+        await notifyUserDepositApproved(dep);
+      } catch (notifyError) {
+        console.error('Deposit approval notification error:', notifyError);
+      }
+    }
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
