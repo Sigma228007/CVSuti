@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "GVSuti",
-  description: "Онлайн-игра",
+  title: "GVSuti Casino",
+  description: "Ваш надежный игровой клуб",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
