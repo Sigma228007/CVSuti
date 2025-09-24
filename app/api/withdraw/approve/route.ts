@@ -1,40 +1,59 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readUidFromCookies } from "@/lib/session";
+import { verifyAdminSignature } from "@/lib/sign";
 import { getWithdraw, approveWithdraw } from "@/lib/store";
 import { notifyUserWithdrawApproved } from "@/lib/notify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function isAdmin(uid: number | null) {
-  const ids = (process.env.ADMIN_IDS || "").split(",").map((s) => Number(s.trim())).filter(Boolean);
-  return uid != null && ids.includes(uid);
-}
-
-export async function POST(req: NextRequest) {
+export async function GET(req: NextRequest) {
   try {
-    const uid = readUidFromCookies(req);
-    if (!isAdmin(uid)) return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get('id');
+    const sig = searchParams.get('sig');
 
-    const { id } = (await req.json().catch(() => ({}))) as { id?: string };
-    if (!id) return NextResponse.json({ ok: false, error: "bad params" }, { status: 400 });
-
-    const wd = await getWithdraw(id);
-    if (!wd) return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
-
-    if (wd.status === "pending") {
-      await approveWithdraw(wd);
-      
-      // Уведомление пользователю
-      try {
-        await notifyUserWithdrawApproved(wd);
-      } catch (notifyError) {
-        console.error('Withdraw approval notification error:', notifyError);
-      }
+    if (!id || !sig) {
+      return NextResponse.json({ ok: false, error: "Missing parameters" }, { status: 400 });
     }
 
-    return NextResponse.json({ ok: true });
+    // Проверяем подпись админа
+    const isValid = verifyAdminSignature({ id }, sig);
+    if (!isValid) {
+      return NextResponse.json({ ok: false, error: "Invalid signature" }, { status: 401 });
+    }
+
+    // Находим заявку на вывод (используем существующую функцию getWithdraw)
+    const withdraw = await getWithdraw(id);
+    if (!withdraw) {
+      return NextResponse.json({ ok: false, error: "Withdraw not found" }, { status: 404 });
+    }
+
+    if (withdraw.status !== 'pending') {
+      return NextResponse.json({ ok: false, error: "Withdraw already processed" }, { status: 400 });
+    }
+
+    // Обновляем статус на approved (используем существующую функцию approveWithdraw)
+    await approveWithdraw(withdraw);
+
+    // Уведомляем пользователя
+    try {
+      await notifyUserWithdrawApproved({
+        userId: withdraw.userId,
+        amount: withdraw.amount,
+        id: withdraw.id
+      });
+    } catch (notifyError) {
+      console.error('Notification error:', notifyError);
+    }
+
+    return NextResponse.json({ 
+      ok: true, 
+      message: "Вывод успешно подтвержден",
+      redirect: "/admin" 
+    });
+
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || "approve failed" }, { status: 500 });
+    console.error('Approve withdraw error:', e);
+    return NextResponse.json({ ok: false, error: e?.message || "Approval failed" }, { status: 500 });
   }
 }

@@ -92,18 +92,16 @@ export default function Page() {
   const popularUsernames = [
     'ProGamer123', 'DarkWolf', 'LuckyStar', 'GoldHunter', 'FastPlayer',
     'SmartKing', 'CoolMaster', 'RedQueen', 'BlueGhost', 'SilverLord',
-    'ProGamer123', 'DarkWolf', 'LuckyStar', // Повторы для реалистичности
+    'ProGamer123', 'DarkWolf', 'LuckyStar',
     'MegaWinner', 'CryptoKing', 'BonusHunter', 'JackpotSeeker'
   ];
 
   // Генератор юзернеймов с повторениями
   const generateUsername = () => {
-    // 30% chance to return popular (repeating) username
     if (Math.random() < 0.3) {
       return popularUsernames[Math.floor(Math.random() * popularUsernames.length)];
     }
     
-    // 70% chance for unique username
     const prefixes = ['Dark', 'Light', 'Red', 'Blue', 'Gold', 'Silver', 'Fast', 'Smart', 'Cool', 'Pro'];
     const suffixes = ['Player', 'Gamer', 'Wolf', 'Hunter', 'King', 'Queen', 'Master', 'Lord', 'Star', 'Ghost'];
     const numbers = Math.floor(Math.random() * 1000);
@@ -123,19 +121,24 @@ export default function Page() {
     };
   };
 
-  // Загрузка истории выводов
+  // Загрузка реальной истории выводов пользователя
   const loadWithdrawHistory = async () => {
     try {
-      // В реальном приложении здесь будет запрос к API
-      // Заглушка с тестовыми данными
-      const mockHistory: WithdrawRequest[] = [
-        { id: '1', amount: 500, details: 'Карта ****1234', status: 'pending', createdAt: Date.now() - 3600000 },
-        { id: '2', amount: 1000, details: 'Qiwi: +79123456789', status: 'approved', createdAt: Date.now() - 86400000 },
-        { id: '3', amount: 300, details: 'ЮMoney: 410011234567890', status: 'declined', createdAt: Date.now() - 172800000 }
-      ];
-      setWithdrawHistory(mockHistory);
+      const response = await fetch('/api/withdraw/history', {
+        headers: getAuthHeaders()
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.ok) {
+          setWithdrawHistory(data.history || []);
+        }
+      } else {
+        setWithdrawHistory([]);
+      }
     } catch (error) {
       console.error('Error loading withdraw history:', error);
+      setWithdrawHistory([]);
     }
   };
 
@@ -143,34 +146,39 @@ export default function Page() {
   const cancelWithdraw = async (withdrawId: string) => {
     setIsLoading(true);
     try {
-      // В реальном приложении здесь будет запрос к API
-      setWithdrawHistory(prev => 
-        prev.map(req => req.id === withdrawId ? { ...req, status: 'declined' } : req)
-      );
-      setMessage('✅ Заявка на вывод отменена');
-      
-      // Возвращаем средства на баланс
-      const withdraw = withdrawHistory.find(req => req.id === withdrawId);
-      if (withdraw) {
-        setBalance(prev => prev + withdraw.amount);
+      const response = await fetch('/api/withdraw/cancel', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ withdrawId }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.ok) {
+          setWithdrawHistory(prev => prev.filter(req => req.id !== withdrawId));
+          setBalance(prev => prev + data.refundAmount);
+          setMessage('✅ Заявка на вывод отменена');
+        }
+      } else {
+        setMessage('❌ Ошибка при отмене вывода');
       }
     } catch (error) {
-      setMessage('❌ Ошибка при отмене вывода');
+      setMessage('❌ Ошибка сети');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Создание случайной активности
+  // Создание случайной активности (только для ленты, без уведомлений)
   const createRandomActivity = (isUserBet = false, userData: any = null, betData: any = null): ActivityItem => {
     const win = Math.random() * 100 < (betData?.chance || 50);
     const amount = betData?.amount || [50, 100, 200, 500, 1000, 2000, 5000][Math.floor(Math.random() * 7)];
     const chance = betData?.chance || Math.floor(Math.random() * 96) + 5;
     
-    const baseMultiplier = 95 / chance;
+    // Правильные множители с комиссией: 10% = 9.5x, 50% = 1.9x, 99% = 0.96x
+    const baseMultiplier = (95 / chance);
     const payout = win ? Math.floor(amount * baseMultiplier) : 0;
     
-    // Число от 1 до 999999
     const rolled = Math.floor(Math.random() * 999999) + 1;
     
     return {
@@ -194,7 +202,6 @@ export default function Page() {
     setActivityFeed(activities);
   };
 
-  // Автоматическое обновление активности в 2 раза быстрее (каждые 500мс)
   useEffect(() => {
     generateActivityFeed();
     loadWithdrawHistory();
@@ -202,9 +209,9 @@ export default function Page() {
     const activityInterval = setInterval(() => {
       setActivityFeed(prev => {
         const newActivities = [createRandomActivity(), createRandomActivity()];
-        return [...newActivities, ...prev.slice(0, 18)]; // Сохраняем 20 последних
+        return [...newActivities, ...prev.slice(0, 18)];
       });
-    }, 500); // Было 1000мс, стало 500мс
+    }, 500);
 
     const onlineInterval = setInterval(() => {
       setOnlineCount(prev => Math.min(100, Math.max(25, prev + (Math.random() > 0.5 ? 1 : -1))));
@@ -281,7 +288,7 @@ export default function Page() {
     }
   };
 
-  // Функция ставки БЕЗ уведомлений в личные сообщения
+  // Функция ставки БЕЗ личных уведомлений
   const placeBet = async () => {
     const amountNum = parseInt(betAmount);
     if (isLoading || !uid || !amountNum || amountNum <= 0) return;
@@ -294,7 +301,9 @@ export default function Page() {
       const winThreshold = betChance * 10000;
       
       const win = betDirection === 'more' ? rolled >= winThreshold : rolled < winThreshold;
-      const baseMultiplier = 95 / betChance;
+      
+      // Правильные множители с комиссией 5%
+      const baseMultiplier = (95 / betChance);
       const payout = win ? Math.floor(amountNum * baseMultiplier) : 0;
 
       const result: BetResult = {
@@ -308,6 +317,7 @@ export default function Page() {
 
       setLastBetResult(result);
 
+      // Отправляем ставку на сервер БЕЗ личных уведомлений
       const response = await fetch('/api/bet', {
         method: 'POST',
         headers: getAuthHeaders(),
@@ -315,12 +325,14 @@ export default function Page() {
           amount: amountNum,
           chance: betChance,
           dir: betDirection,
+          notify: false // Отключаем личные уведомления
         }),
       });
 
       if (response.ok) {
         await fetchBalance();
         
+        // Добавляем активность в ленту
         const userActivity = createRandomActivity(true, userData, {
           amount: amountNum,
           chance: betChance,
@@ -328,9 +340,6 @@ export default function Page() {
         });
         
         setActivityFeed(prev => [userActivity, ...prev.slice(0, 19)]);
-        
-        // БЕЗ УВЕДОМЛЕНИЙ В ЛИЧНЫЕ СООБЩЕНИЯ
-        // Тихий режим - результат только в интерфейсе
         
       } else {
         const errorData = await response.json();
@@ -343,7 +352,7 @@ export default function Page() {
     }
   };
 
-  // Пополнение
+  // Пополнение (с уведомлением)
   const handleDeposit = async () => {
     const amountNum = parseInt(depositAmount);
     if (isLoading || !amountNum || amountNum <= 0) return;
@@ -373,7 +382,7 @@ export default function Page() {
     }
   };
 
-  // Вывод
+  // Вывод средств (с уведомлением админу)
   const handleWithdraw = async () => {
     const amountNum = parseInt(withdrawAmount);
     if (isLoading || !uid || !amountNum || amountNum <= 0 || balance < amountNum) return;
@@ -387,21 +396,26 @@ export default function Page() {
     setMessage('');
 
     try {
-      // В реальном приложении здесь будет запрос к API
-      const newWithdraw: WithdrawRequest = {
-        id: `wd_${Date.now()}`,
-        amount: amountNum,
-        details: withdrawDetails,
-        status: 'pending',
-        createdAt: Date.now()
-      };
-      
-      setWithdrawHistory(prev => [newWithdraw, ...prev]);
-      setBalance(prev => prev - amountNum);
-      setMessage(`✅ Заявка на вывод ${amountNum}₽ создана!`);
-      setShowWithdrawForm(false);
-      setWithdrawDetails('');
-      
+      const response = await fetch('/api/withdraw/create', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ 
+          amount: amountNum,
+          details: withdrawDetails
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.ok) {
+        setWithdrawHistory(prev => [data.withdrawRequest, ...prev]);
+        setBalance(prev => prev - amountNum);
+        setMessage(`✅ Заявка на вывод ${amountNum}₽ создана! Ожидайте подтверждения админа.`);
+        setShowWithdrawForm(false);
+        setWithdrawDetails('');
+      } else {
+        setMessage(`❌ Ошибка: ${data.error}`);
+      }
     } catch (err: any) {
       setMessage('❌ Ошибка сети');
     } finally {
@@ -470,7 +484,7 @@ export default function Page() {
             </div>
 
             <div style={{ marginBottom: '16px' }}>
-              <label className="label">Шанс выигрыша: {betChance}%</label>
+              <label className="label">Шанс выигрыша: {betChance}% (x{(95/betChance).toFixed(2)})</label>
               <input
                 type="range"
                 className="slider"
@@ -607,7 +621,7 @@ export default function Page() {
             </div>
           </div>
 
-          {/* История выводов */}
+          {/* История выводов (только реальные) */}
           {withdrawHistory.length > 0 && (
             <div className="card">
               <div className="h2">📋 История выводов</div>
@@ -690,7 +704,7 @@ export default function Page() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', opacity: 0.8 }}>
                   <span>Число: {activity.rolled.toLocaleString()}</span>
                   <span style={{ color: activity.result === 'win' ? '#22c55e' : '#ef4444' }}>
-                    {activity.result === 'win' ? `+${activity.payout}₽` : 'Проигрыш'}
+                    {activity.result === 'win' ? `+${activity.payout}₽ (x${(95/activity.chance).toFixed(2)})` : 'Проигрыш'}
                   </span>
                 </div>
               </div>

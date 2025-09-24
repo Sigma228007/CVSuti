@@ -113,7 +113,7 @@ export async function notifyWithdrawAdmin(req: { id: string; userId: number; amo
     const approveUrl = `${baseUrl}/api/withdraw/approve?id=${req.id}&sig=${sig}`;
     const declineUrl = `${baseUrl}/api/withdraw/decline?id=${req.id}&sig=${sig}`;
 
-    const detailsStr = req.details ? `\n├ Реквизиты: <code>${JSON.stringify(req.details, null, 2).slice(0, 100)}...</code>` : '';
+    const detailsStr = req.details ? `\n├ Реквизиты: <code>${typeof req.details === 'string' ? req.details : JSON.stringify(req.details)}</code>` : '';
 
     const message = `
 💸 <b>Новая заявка на вывод</b>
@@ -167,7 +167,7 @@ export async function notifyUserWithdrawDeclined(p: { userId: number; amount: nu
   return await sendTelegramMessage(p.userId, message);
 }
 
-// Уведомление о новой ставке (для админа)
+// Уведомление о новой ставке (для админа) - БЕЗ личных уведомлений пользователю
 export async function notifyNewBet(bet: { userId: number; amount: number; chance: number; result: string; payout: number }) {
   if (!ADMIN_CHAT || !BOT_TOKEN) return false;
 
@@ -182,36 +182,4 @@ export async function notifyNewBet(bet: { userId: number; amount: number; chance
   `.trim();
 
   return await sendTelegramMessage(ADMIN_CHAT, message);
-}
-
-// Уведомление о выигрыше пользователю
-export async function notifyUserBetWin(userId: number, amount: number, payout: number) {
-  if (!BOT_TOKEN) return false;
-
-  const message = `
-🎉 <b>Поздравляем с выигрышем!</b>
-├ Ваша ставка: <b>${amount}₽</b>
-├ Выигрыш: <b>${payout}₽</b>
-├ Чистая прибыль: <b>${payout - amount}₽</b>
-└ Дата: <i>${new Date().toLocaleString('ru-RU')}</i>
-
-💰 <i>Средства зачислены на ваш баланс</i>
-  `.trim();
-
-  return await sendTelegramMessage(userId, message);
-}
-
-// Уведомление о проигрыше пользователю
-export async function notifyUserBetLoss(userId: number, amount: number) {
-  if (!BOT_TOKEN) return false;
-
-  const message = `
-😢 <b>Ставка не сыграла</b>
-├ Сумма ставки: <b>${amount}₽</b>
-└ Дата: <i>${new Date().toLocaleString('ru-RU')}</i>
-
-🎰 <i>Удачи в следующий раз!</i>
-  `.trim();
-
-  return await sendTelegramMessage(userId, message);
 }

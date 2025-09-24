@@ -106,3 +106,13 @@ export function verifyAdminLink(
     return { ok: false };
   }
 }
+export function verifyAdminSignature(payload: any, signature: string): boolean {
+  try {
+    const key = process.env.ADMIN_SIGN_KEY || "default_key";
+    const expectedSignature = signAdminPayload(payload, key);
+    return expectedSignature === signature;
+  } catch (error) {
+    console.error('Error verifying admin signature:', error);
+    return false;
+  }
+}

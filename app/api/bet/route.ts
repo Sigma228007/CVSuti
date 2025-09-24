@@ -15,7 +15,7 @@ import {
   MAX_BET,
 } from "@/lib/config";
 import { verifyInitData } from "@/lib/sign";
-import { notifyNewBet, notifyUserBetWin, notifyUserBetLoss } from "@/lib/notify";
+import { notifyNewBet } from "@/lib/notify"; // Только уведомление о новой ставке (для ленты)
 import crypto from "crypto";
 
 export const runtime = "nodejs";
@@ -26,6 +26,7 @@ type Body = {
   amount?: number;
   chance?: number;
   dir?: "more" | "less";
+  notify?: boolean; // Новый параметр для управления уведомлениями
 };
 
 function publicCommit(serverSeed: string) {
@@ -71,6 +72,7 @@ export async function POST(req: NextRequest) {
     const amount = Math.floor(Number(body.amount || 0));
     const chance = Math.max(MIN_CHANCE, Math.min(MAX_CHANCE, Math.floor(Number(body.chance || 0))));
     const dir = body.dir || 'more';
+    const notify = body.notify !== false; // По умолчанию true, но можно отключить
     
     if (!Number.isFinite(amount) || amount < MIN_BET || amount > MAX_BET) {
       return NextResponse.json({ ok: false, error: "bad amount" }, { status: 400 });
@@ -97,9 +99,9 @@ export async function POST(req: NextRequest) {
     const winThreshold = Math.round(chance * 100);
     const win = dir === 'more' ? rolled >= winThreshold : rolled < winThreshold;
 
-    // Расчет выплаты
+    // Расчет выплаты с комиссией 5% (95/100 = 0.95)
     const rawPayout = Math.floor((amount * 100) / Math.max(chance, 1));
-    const payout = Math.floor((rawPayout * (10000 - HOUSE_EDGE_BP)) / 10000);
+    const payout = Math.floor((rawPayout * 95) / 100); // Комиссия 5%
 
     // Обновляем баланс
     await addBalance(userId, -amount);
@@ -125,23 +127,27 @@ export async function POST(req: NextRequest) {
     
     await pushBet(userId, bet);
 
-    // Отправляем уведомления
-    try {
-      await notifyNewBet({
-        userId,
-        amount,
-        chance,
-        result: win ? 'win' : 'lose',
-        payout: won
-      });
+    // Отправляем уведомления только если не отключено
+    if (notify) {
+      try {
+        // Только уведомление о новой ставке (для ленты активности)
+        await notifyNewBet({
+          userId,
+          amount,
+          chance,
+          result: win ? 'win' : 'lose',
+          payout: won
+        });
 
-      if (win) {
-        await notifyUserBetWin(userId, amount, won);
-      } else {
-        await notifyUserBetLoss(userId, amount);
+        // УБРАЛИ личные уведомления пользователю о выигрыше/проигрыше
+        // if (win) {
+        //   await notifyUserBetWin(userId, amount, won);
+        // } else {
+        //   await notifyUserBetLoss(userId, amount);
+        // }
+      } catch (notifyError) {
+        console.error('Notification error:', notifyError);
       }
-    } catch (notifyError) {
-      console.error('Notification error:', notifyError);
     }
 
     return NextResponse.json({
