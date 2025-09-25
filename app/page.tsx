@@ -6,6 +6,7 @@ type BetResult = {
   ok: boolean;
   result?: 'win' | 'lose';
   chance?: number;
+  realChance?: number;
   rolled?: number;
   payout?: number;
   balanceDelta?: number;
@@ -291,34 +292,36 @@ export default function Page() {
 
   // Функция ставки БЕЗ личных уведомлений
   const placeBet = async () => {
-    const amountNum = parseInt(betAmount);
-    if (isLoading || !uid || !amountNum || amountNum <= 0) return;
+  const amountNum = parseInt(betAmount);
+  if (isLoading || !uid || !amountNum || amountNum <= 0) return;
+  
+  setIsLoading(true);
+  setLastBetResult(null);
+
+  try {
+    const rolled = Math.floor(Math.random() * 999999) + 1;
     
-    setIsLoading(true);
-    setLastBetResult(null);
+    // РЕАЛЬНЫЙ ШАНС (на 10% меньше заявленного)
+    const realChance = Math.max(0.1, betChance * 0.9);
+    const winThreshold = realChance * 10000;
+    
+    const win = betDirection === 'more' ? rolled >= winThreshold : rolled < winThreshold;
+    
+    // Правильные множители с комиссией 5%
+    const baseMultiplier = (95 / realChance);
+    const payout = win ? Math.floor(amountNum * baseMultiplier) : 0;
 
-    try {
-      // Правильный расчет выигрыша на основе заявленного шанса
-      const randomValue = Math.random() * 100;
-      const win = randomValue < betChance;
-      
-      // Правильные множители с комиссией 5%
-      const baseMultiplier = (95 / betChance);
-      const payout = win ? Math.floor(amountNum * baseMultiplier) : 0;
+    const result: BetResult = {
+      ok: true,
+      result: win ? 'win' : 'lose',
+      chance: betChance,
+      realChance: realChance,
+      rolled: rolled,
+      payout: payout,
+      balanceDelta: win ? payout - amountNum : -amountNum
+    };
 
-      // Генерируем число для отображения в диапазоне 1-999999
-      const rolled = Math.floor(Math.random() * 999999) + 1;
-
-      const result: BetResult = {
-        ok: true,
-        result: win ? 'win' : 'lose',
-        chance: betChance,
-        rolled: rolled,
-        payout: payout,
-        balanceDelta: win ? payout - amountNum : -amountNum
-      };
-
-      setLastBetResult(result);
+    setLastBetResult(result);
 
       // Отправляем ставку на сервер БЕЗ личных уведомлений
       const response = await fetch('/api/bet', {

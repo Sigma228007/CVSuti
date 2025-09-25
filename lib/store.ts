@@ -10,7 +10,6 @@ export function redis(): Redis {
   _r = new Redis(url, { 
     maxRetriesPerRequest: 2, 
     lazyConnect: false,
-    // Убрал retryDelayOnFailover - этого параметра нет в ioredis
   });
   return _r;
 }
@@ -57,6 +56,7 @@ export type BetRecord = {
   payout: number;
   rolled: number;
   chance?: number;
+  realChance?: number;
   dir?: string;
   win?: boolean;
   createdAt: number;
@@ -213,6 +213,7 @@ export async function pushBet(userId: number, bet: BetRecord) {
       payout: bet.payout,
       rolled: bet.rolled,
       chance: bet.chance,
+      realChance: bet.realChance,
       dir: bet.dir,
       win: bet.win,
       createdAt: bet.createdAt
@@ -356,6 +357,7 @@ export async function createWithdrawRequest(
   const bal = await getBalance(userId);
   if (bal < amt) throw new Error("not enough balance");
 
+  // Сначала списываем средства
   await addBalance(userId, -amt);
 
   const wd: Withdraw = {
@@ -374,10 +376,13 @@ export async function createWithdrawRequest(
     await pushHistory(userId, { 
       type: "withdraw_pending", 
       id: wd.id, 
-      amount: wd.amount 
+      amount: wd.amount,
+      details: wd.details
     });
     return wd;
   } catch (error) {
+    // Если ошибка при создании заявки, возвращаем средства
+    await addBalance(userId, amt);
     console.error("Error creating withdraw:", error);
     throw error;
   }
@@ -415,11 +420,13 @@ export async function declineWithdraw(wd: Withdraw): Promise<void> {
   if (wd.status === "declined") return;
   
   try {
+    // Возвращаем средства на баланс
+    await addBalance(wd.userId, wd.amount);
+    
     wd.status = "declined";
     wd.declinedAt = Date.now();
     await setJSON(kWd(wd.id), wd);
     await redis().zrem(Z_WDS_PENDING, wd.id);
-    await addBalance(wd.userId, wd.amount);
     await pushHistory(wd.userId, { 
       type: "withdraw_declined", 
       id: wd.id, 
@@ -427,6 +434,30 @@ export async function declineWithdraw(wd: Withdraw): Promise<void> {
     });
   } catch (error) {
     console.error("Error declining withdraw:", error);
+    throw error;
+  }
+}
+
+export async function cancelWithdrawByUser(wd: Withdraw): Promise<void> {
+  if (wd.status !== "pending") {
+    throw new Error("Cannot cancel processed withdraw");
+  }
+  
+  try {
+    // Возвращаем средства на баланс
+    await addBalance(wd.userId, wd.amount);
+    
+    wd.status = "declined";
+    wd.declinedAt = Date.now();
+    await setJSON(kWd(wd.id), wd);
+    await redis().zrem(Z_WDS_PENDING, wd.id);
+    await pushHistory(wd.userId, { 
+      type: "withdraw_cancelled", 
+      id: wd.id, 
+      amount: wd.amount 
+    });
+  } catch (error) {
+    console.error("Error cancelling withdraw:", error);
     throw error;
   }
 }
@@ -467,47 +498,5 @@ export async function incNonce(userId: number): Promise<number> {
   } catch (error) {
     console.error("Error incrementing nonce:", error);
     throw error;
-  }
-}
-
-/** ---------- Utility functions ---------- */
-export async function getUserStats(userId: number): Promise<{
-  totalDeposited: number;
-  totalWithdrawn: number;
-  netProfit: number;
-  totalGames: number;
-  wins: number;
-  losses: number;
-}> {
-  try {
-    const history = await getUserHistory(userId, 1000);
-    
-    const deposits = history.filter(item => item.type?.includes('deposit_approved'));
-    const withdrawals = history.filter(item => item.type?.includes('withdraw_approved'));
-    const bets = history.filter(item => item.type === 'bet');
-    
-    const totalDeposited = deposits.reduce((sum, item) => sum + (item.amount || 0), 0);
-    const totalWithdrawn = withdrawals.reduce((sum, item) => sum + (item.amount || 0), 0);
-    const totalGames = bets.length;
-    const wins = bets.filter(bet => bet.win === true || bet.payout > 0).length;
-
-    return {
-      totalDeposited,
-      totalWithdrawn,
-      netProfit: totalDeposited - totalWithdrawn,
-      totalGames,
-      wins,
-      losses: totalGames - wins
-    };
-  } catch (error) {
-    console.error("Error getting user stats:", error);
-    return {
-      totalDeposited: 0,
-      totalWithdrawn: 0,
-      netProfit: 0,
-      totalGames: 0,
-      wins: 0,
-      losses: 0
-    };
   }
 }

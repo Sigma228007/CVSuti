@@ -116,6 +116,7 @@ export async function POST(req: NextRequest) {
       payout: won,
       rolled,
       chance: chance, // Сохраняем заявленный шанс для истории
+      realChance: realChance, // Сохраняем реальный шанс
       dir,
       win,
       createdAt: Date.now(),
