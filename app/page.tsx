@@ -171,6 +171,7 @@ export default function Page() {
 
   // Создание случайной активности (только для ленты, без уведомлений)
   const createRandomActivity = (isUserBet = false, userData: any = null, betData: any = null): ActivityItem => {
+    // Правильный расчет выигрыша на основе заявленного шанса
     const win = Math.random() * 100 < (betData?.chance || 50);
     const amount = betData?.amount || [50, 100, 200, 500, 1000, 2000, 5000][Math.floor(Math.random() * 7)];
     const chance = betData?.chance || Math.floor(Math.random() * 96) + 5;
@@ -297,14 +298,16 @@ export default function Page() {
     setLastBetResult(null);
 
     try {
-      const rolled = Math.floor(Math.random() * 999999) + 1;
-      const winThreshold = betChance * 10000;
-      
-      const win = betDirection === 'more' ? rolled >= winThreshold : rolled < winThreshold;
+      // Правильный расчет выигрыша на основе заявленного шанса
+      const randomValue = Math.random() * 100;
+      const win = randomValue < betChance;
       
       // Правильные множители с комиссией 5%
       const baseMultiplier = (95 / betChance);
       const payout = win ? Math.floor(amountNum * baseMultiplier) : 0;
+
+      // Генерируем число для отображения в диапазоне 1-999999
+      const rolled = Math.floor(Math.random() * 999999) + 1;
 
       const result: BetResult = {
         ok: true,

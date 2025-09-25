@@ -110,8 +110,10 @@ export async function notifyWithdrawAdmin(req: { id: string; userId: number; amo
     const sig = signAdminPayload({ id: req.id, user: req.userId, amount: req.amount }, key);
 
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000";
-    const approveUrl = `${baseUrl}/api/withdraw/approve?id=${req.id}&sig=${sig}`;
-    const declineUrl = `${baseUrl}/api/withdraw/decline?id=${req.id}&sig=${sig}`;
+    
+    // Правильные URL для кнопок
+    const approveUrl = `${baseUrl}/api/withdraw/approve?id=${req.id}&sig=${encodeURIComponent(sig)}`;
+    const declineUrl = `${baseUrl}/api/withdraw/decline?id=${req.id}&sig=${encodeURIComponent(sig)}`;
 
     const detailsStr = req.details ? `\n├ Реквизиты: <code>${typeof req.details === 'string' ? req.details : JSON.stringify(req.details)}</code>` : '';
 
@@ -125,8 +127,16 @@ export async function notifyWithdrawAdmin(req: { id: string; userId: number; amo
 
     return await sendTelegramMessage(ADMIN_CHAT, message, {
       inline_keyboard: [
-        [{ text: "✅ Подтвердить", url: approveUrl }],
-        [{ text: "❌ Отклонить", url: declineUrl }]
+        [
+          { 
+            text: "✅ Подтвердить вывод", 
+            url: approveUrl 
+          },
+          { 
+            text: "❌ Отклонить вывод", 
+            url: declineUrl 
+          }
+        ]
       ]
     });
   } catch (error) {
@@ -167,15 +177,17 @@ export async function notifyUserWithdrawDeclined(p: { userId: number; amount: nu
   return await sendTelegramMessage(p.userId, message);
 }
 
-// Уведомление о новой ставке (для админа) - БЕЗ личных уведомлений пользователю
-export async function notifyNewBet(bet: { userId: number; amount: number; chance: number; result: string; payout: number }) {
+// Уведомление о новой ставке (для админа)
+export async function notifyNewBet(bet: { userId: number; amount: number; chance: number; realChance?: number; result: string; payout: number }) {
   if (!ADMIN_CHAT || !BOT_TOKEN) return false;
+
+  const realChanceInfo = bet.realChance ? `\n├ Реальный шанс: <b>${bet.realChance.toFixed(1)}%</b>` : '';
 
   const message = `
 🎰 <b>Новая ставка</b>
 ├ User: ${bet.userId}
 ├ Ставка: <b>${bet.amount}₽</b>
-├ Шанс: <b>${bet.chance}%</b>
+├ Заявленный шанс: <b>${bet.chance}%</b>${realChanceInfo}
 ├ Результат: <b>${bet.result === 'win' ? '✅ Выигрыш' : '❌ Проигрыш'}</b>
 ├ Выплата: <b>${bet.payout}₽</b>
 └ Дата: <i>${new Date().toLocaleString('ru-RU')}</i>

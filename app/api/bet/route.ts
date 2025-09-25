@@ -15,7 +15,7 @@ import {
   MAX_BET,
 } from "@/lib/config";
 import { verifyInitData } from "@/lib/sign";
-import { notifyNewBet } from "@/lib/notify"; // Только уведомление о новой ставке (для ленты)
+import { notifyNewBet } from "@/lib/notify";
 import crypto from "crypto";
 
 export const runtime = "nodejs";
@@ -26,7 +26,7 @@ type Body = {
   amount?: number;
   chance?: number;
   dir?: "more" | "less";
-  notify?: boolean; // Новый параметр для управления уведомлениями
+  notify?: boolean;
 };
 
 function publicCommit(serverSeed: string) {
@@ -50,7 +50,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "BOT_TOKEN missing" }, { status: 500 });
     }
     
-    // Получаем initData из заголовков, если нет в теле
     let initData = body.initData;
     if (!initData) {
       initData = req.headers.get('X-Telegram-Init-Data') || '';
@@ -60,7 +59,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "no initData" }, { status: 400 });
     }
 
-    // Проверяем подпись Telegram
     const v = verifyInitData(initData, botToken);
     if (!v.ok || !v.user) {
       return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
@@ -68,11 +66,10 @@ export async function POST(req: NextRequest) {
     
     const userId = Number(v.user.id);
 
-    // Валидация параметров ставки
     const amount = Math.floor(Number(body.amount || 0));
     const chance = Math.max(MIN_CHANCE, Math.min(MAX_CHANCE, Math.floor(Number(body.chance || 0))));
     const dir = body.dir || 'more';
-    const notify = body.notify !== false; // По умолчанию true, но можно отключить
+    const notify = body.notify !== false;
     
     if (!Number.isFinite(amount) || amount < MIN_BET || amount > MAX_BET) {
       return NextResponse.json({ ok: false, error: "bad amount" }, { status: 400 });
@@ -82,13 +79,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "bad chance" }, { status: 400 });
     }
 
-    // Проверяем баланс
     const bal = await getBalance(userId);
     if (bal < amount) {
       return NextResponse.json({ ok: false, error: "not enough balance" }, { status: 400 });
     }
 
-    // Генерируем результат
+    // РЕАЛЬНЫЙ ШАНС (на 10% меньше заявленного)
+    const realChance = Math.max(0.1, chance * 0.9); // 10% -> 9%, 50% -> 45%, 99% -> 89.1%
+    
     const serverSeed = process.env.SERVER_SEED || "server_seed";
     const nonce = await incNonce(userId);
     const clientSeed = `${userId}:${nonce}`;
@@ -96,14 +94,13 @@ export async function POST(req: NextRequest) {
     const r = roll(serverSeed, clientSeed, nonce);
 
     const rolled = r.value; // 0..9999
-    const winThreshold = Math.round(chance * 100);
+    const winThreshold = Math.round(realChance * 100); // Используем реальный шанс
     const win = dir === 'more' ? rolled >= winThreshold : rolled < winThreshold;
 
-    // Расчет выплаты с комиссией 5% (95/100 = 0.95)
-    const rawPayout = Math.floor((amount * 100) / Math.max(chance, 1));
-    const payout = Math.floor((rawPayout * 95) / 100); // Комиссия 5%
+    // Расчет выплаты с комиссией 5%
+    const rawPayout = Math.floor((amount * 100) / Math.max(realChance, 1));
+    const payout = Math.floor((rawPayout * 95) / 100);
 
-    // Обновляем баланс
     await addBalance(userId, -amount);
     let won = 0;
     
@@ -112,14 +109,14 @@ export async function POST(req: NextRequest) {
       await addBalance(userId, won);
     }
 
-    // Сохраняем ставку в историю
     const bet: BetRecord = {
       id: `bet_${Date.now()}_${userId}`,
       userId,
       amount,
       payout: won,
       rolled,
-      chance,
+      chance: chance, // Сохраняем заявленный шанс для истории
+      realChance: realChance, // Сохраняем реальный шанс
       dir,
       win,
       createdAt: Date.now(),
@@ -127,24 +124,16 @@ export async function POST(req: NextRequest) {
     
     await pushBet(userId, bet);
 
-    // Отправляем уведомления только если не отключено
     if (notify) {
       try {
-        // Только уведомление о новой ставке (для ленты активности)
         await notifyNewBet({
           userId,
           amount,
-          chance,
+          chance: chance,
+          realChance: realChance,
           result: win ? 'win' : 'lose',
           payout: won
         });
-
-        // УБРАЛИ личные уведомления пользователю о выигрыше/проигрыше
-        // if (win) {
-        //   await notifyUserBetWin(userId, amount, won);
-        // } else {
-        //   await notifyUserBetLoss(userId, amount);
-        // }
       } catch (notifyError) {
         console.error('Notification error:', notifyError);
       }
@@ -153,8 +142,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       result: win ? "win" : "lose",
-      chance,
-      rolled: rolled / 100, // Конвертируем в проценты для клиента
+      chance: chance,
+      realChance: realChance,
+      rolled: rolled / 100,
       payout: won,
       balanceDelta: win ? won - amount : -amount,
     });
