@@ -1,12 +1,11 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 
 type BetResult = {
   ok: boolean;
   result?: 'win' | 'lose';
   chance?: number;
-  realChance?: number;
   rolled?: number;
   payout?: number;
   balanceDelta?: number;
@@ -34,7 +33,12 @@ type ActivityItem = {
 
 // Компонент для инициализации аутентификации
 function InitAuth() {
+  const initialized = useRef(false);
+  
   useEffect(() => {
+    if (initialized.current) return;
+    initialized.current = true;
+
     const initializeAuth = async () => {
       try {
         const tg = (window as any).Telegram?.WebApp;
@@ -89,11 +93,14 @@ export default function Page() {
   const [activityFeed, setActivityFeed] = useState<ActivityItem[]>([]);
   const [onlineCount, setOnlineCount] = useState<number>(50);
 
+  // Refs для защиты от дублирования
+  const dataLoaded = useRef(false);
+  const activityInitialized = useRef(false);
+
   // Популярные юзернеймы которые будут повторяться
   const popularUsernames = [
     'ProGamer123', 'DarkWolf', 'LuckyStar', 'GoldHunter', 'FastPlayer',
     'SmartKing', 'CoolMaster', 'RedQueen', 'BlueGhost', 'SilverLord',
-    'ProGamer123', 'DarkWolf', 'LuckyStar',
     'MegaWinner', 'CryptoKing', 'BonusHunter', 'JackpotSeeker'
   ];
 
@@ -124,6 +131,8 @@ export default function Page() {
 
   // Загрузка реальной истории выводов пользователя
   const loadWithdrawHistory = async () => {
+    if (dataLoaded.current) return;
+    
     try {
       const response = await fetch('/api/withdraw/history', {
         headers: getAuthHeaders()
@@ -143,8 +152,10 @@ export default function Page() {
     }
   };
 
-  // Отмена вывода
+  // Отмена вывода пользователем
   const cancelWithdraw = async (withdrawId: string) => {
+    if (isLoading) return;
+    
     setIsLoading(true);
     try {
       const response = await fetch('/api/withdraw/cancel', {
@@ -153,15 +164,15 @@ export default function Page() {
         body: JSON.stringify({ withdrawId }),
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        if (data.ok) {
-          setWithdrawHistory(prev => prev.filter(req => req.id !== withdrawId));
-          setBalance(prev => prev + data.refundAmount);
-          setMessage('✅ Заявка на вывод отменена');
-        }
+      const data = await response.json();
+
+      if (data.ok) {
+        setWithdrawHistory(prev => prev.filter(req => req.id !== withdrawId));
+        setBalance(prev => prev + data.refundAmount);
+        setMessage('✅ Заявка на вывод отменена');
+        await fetchBalance();
       } else {
-        setMessage('❌ Ошибка при отмене вывода');
+        setMessage(`❌ ${data.error || 'Ошибка при отмене вывода'}`);
       }
     } catch (error) {
       setMessage('❌ Ошибка сети');
@@ -170,23 +181,30 @@ export default function Page() {
     }
   };
 
-  // Создание случайной активности (только для ленты, без уведомлений)
+  // Создание случайной активности
   const createRandomActivity = (isUserBet = false, userData: any = null, betData: any = null): ActivityItem => {
-    // Правильный расчет выигрыша на основе заявленного шанса
-    const win = Math.random() * 100 < (betData?.chance || 50);
-    const amount = betData?.amount || [50, 100, 200, 500, 1000, 2000, 5000][Math.floor(Math.random() * 7)];
-    const chance = betData?.chance || Math.floor(Math.random() * 96) + 5;
+    const chance = Math.min(95, betData?.chance || Math.floor(Math.random() * 95) + 1);
     
-    // Правильные множители с комиссией: 10% = 9.5x, 50% = 1.9x, 99% = 0.96x
-    const baseMultiplier = (95 / chance);
-    const payout = win ? Math.floor(amount * baseMultiplier) : 0;
+    const totalNumbers = 999999;
+    const winNumbersCount = Math.floor((chance / 100) * totalNumbers);
     
+    let win = false;
     const rolled = Math.floor(Math.random() * 999999) + 1;
+    
+    if (betData?.direction === 'more' || Math.random() > 0.5) {
+      const minWinNumber = totalNumbers - winNumbersCount + 1;
+      win = rolled >= minWinNumber;
+    } else {
+      win = rolled <= winNumbersCount;
+    }
+    
+    const baseMultiplier = 100 / chance;
+    const payout = win ? Math.floor((betData?.amount || 100) * baseMultiplier) : 0;
     
     return {
       id: `game_${Date.now()}_${Math.random()}`,
       player: isUserBet ? (userData?.first_name || 'Вы') : generateUsername(),
-      amount: amount,
+      amount: betData?.amount || 100,
       result: win ? 'win' : 'lose',
       payout: payout,
       chance: chance,
@@ -197,6 +215,9 @@ export default function Page() {
 
   // Генерация ленты активности
   const generateActivityFeed = () => {
+    if (activityInitialized.current) return;
+    activityInitialized.current = true;
+    
     const activities: ActivityItem[] = [];
     for (let i = 0; i < 20; i++) {
       activities.push(createRandomActivity());
@@ -204,32 +225,11 @@ export default function Page() {
     setActivityFeed(activities);
   };
 
-  useEffect(() => {
-    generateActivityFeed();
-    loadWithdrawHistory();
-    
-    const activityInterval = setInterval(() => {
-      setActivityFeed(prev => {
-        const newActivities = [createRandomActivity(), createRandomActivity()];
-        return [...newActivities, ...prev.slice(0, 18)];
-      });
-    }, 500);
-
-    const onlineInterval = setInterval(() => {
-      setOnlineCount(prev => Math.min(100, Math.max(25, prev + (Math.random() > 0.5 ? 1 : -1))));
-    }, 3000);
-
-    return () => {
-      clearInterval(activityInterval);
-      clearInterval(onlineInterval);
-    };
-  }, []);
-
-  useEffect(() => {
-    loadUserData();
-  }, []);
-
+  // Загрузка данных пользователя
   const loadUserData = async () => {
+    if (dataLoaded.current) return;
+    dataLoaded.current = true;
+    
     try {
       const savedUser = localStorage.getItem('tg_user');
       const savedUid = localStorage.getItem('tg_uid');
@@ -238,6 +238,7 @@ export default function Page() {
         setUserData(JSON.parse(savedUser));
         setUid(Number(savedUid));
         await fetchBalance();
+        await loadWithdrawHistory();
       } else {
         await reauthenticate();
       }
@@ -283,6 +284,7 @@ export default function Page() {
           setUserData(data.user);
           setUid(data.uid);
           setBalance(data.balance);
+          await loadWithdrawHistory();
         }
       }
     } catch (error) {
@@ -290,72 +292,46 @@ export default function Page() {
     }
   };
 
-  // Функция ставки БЕЗ личных уведомлений
+  // Функция ставки
   const placeBet = async () => {
-  const amountNum = parseInt(betAmount);
-  if (isLoading || !uid || !amountNum || amountNum <= 0) return;
-  
-  setIsLoading(true);
-  setLastBetResult(null);
-
-  try {
-    // Правильная логика: число от 1 до 999999
-    const rolled = Math.floor(Math.random() * 999999) + 1;
+    if (isLoading) return;
     
-    // Правильный расчет порога
-    const totalNumbers = 999999;
-    const winNumbersCount = Math.floor((betChance / 100) * totalNumbers);
+    const amountNum = parseInt(betAmount);
+    if (!uid || !amountNum || amountNum <= 0) return;
     
-    let win = false;
-    
-    if (betDirection === 'more') {
-      // При "больше": выигрышные числа в конце диапазона
-      const minWinNumber = totalNumbers - winNumbersCount + 1;
-      win = rolled >= minWinNumber;
-    } else {
-      // При "меньше": выигрышные числа в начале диапазона  
-      win = rolled <= winNumbersCount;
-    }
-    
-    // Правильный множитель с комиссией 5%
-    const baseMultiplier = 95 / betChance;
-    const payout = win ? Math.floor(amountNum * baseMultiplier) : 0;
+    setIsLoading(true);
+    setLastBetResult(null);
 
-    const result: BetResult = {
-      ok: true,
-      result: win ? 'win' : 'lose',
-      chance: betChance,
-      rolled: rolled,
-      payout: payout,
-      balanceDelta: win ? payout - amountNum : -amountNum
-    };
-
-    setLastBetResult(result);
-
-      // Отправляем ставку на сервер БЕЗ личных уведомлений
+    try {
       const response = await fetch('/api/bet', {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({
           amount: amountNum,
-          chance: betChance,
+          chance: Math.min(95, betChance),
           dir: betDirection,
-          notify: false // Отключаем личные уведомления
+          notify: false
         }),
       });
 
       if (response.ok) {
-        await fetchBalance();
+        const data = await response.json();
         
-        // Добавляем активность в ленту
-        const userActivity = createRandomActivity(true, userData, {
-          amount: amountNum,
-          chance: betChance,
-          win: win
-        });
-        
-        setActivityFeed(prev => [userActivity, ...prev.slice(0, 19)]);
-        
+        if (data.ok) {
+          setLastBetResult(data);
+          await fetchBalance();
+          
+          const userActivity = createRandomActivity(true, userData, {
+            amount: amountNum,
+            chance: betChance,
+            direction: betDirection,
+            win: data.result === 'win'
+          });
+          
+          setActivityFeed(prev => [userActivity, ...prev.slice(0, 19)]);
+        } else {
+          setMessage(`Ошибка: ${data.error}`);
+        }
       } else {
         const errorData = await response.json();
         setMessage(`Ошибка: ${errorData.error}`);
@@ -367,10 +343,12 @@ export default function Page() {
     }
   };
 
-  // Пополнение (с уведомлением)
+  // Пополнение
   const handleDeposit = async () => {
+    if (isLoading) return;
+    
     const amountNum = parseInt(depositAmount);
-    if (isLoading || !amountNum || amountNum <= 0) return;
+    if (!amountNum || amountNum <= 0) return;
     
     setIsLoading(true);
     setMessage('');
@@ -397,10 +375,12 @@ export default function Page() {
     }
   };
 
-  // Вывод средств (с уведомлением админу)
+  // Вывод средств
   const handleWithdraw = async () => {
+    if (isLoading) return;
+    
     const amountNum = parseInt(withdrawAmount);
-    if (isLoading || !uid || !amountNum || amountNum <= 0 || balance < amountNum) return;
+    if (!uid || !amountNum || amountNum <= 0 || balance < amountNum) return;
     
     if (!withdrawDetails.trim()) {
       setMessage('❌ Укажите реквизиты для вывода');
@@ -437,6 +417,27 @@ export default function Page() {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    generateActivityFeed();
+    loadUserData();
+    
+    const onlineInterval = setInterval(() => {
+      setOnlineCount(prev => Math.min(100, Math.max(25, prev + (Math.random() > 0.5 ? 1 : -1))));
+    }, 3000);
+
+    const activityInterval = setInterval(() => {
+      setActivityFeed(prev => {
+        const newActivities = [createRandomActivity(), createRandomActivity()];
+        return [...newActivities, ...prev.slice(0, 18)];
+      });
+    }, 500);
+
+    return () => {
+      clearInterval(activityInterval);
+      clearInterval(onlineInterval);
+    };
+  }, []);
 
   if (!uid) {
     return (
@@ -499,14 +500,14 @@ export default function Page() {
             </div>
 
             <div style={{ marginBottom: '16px' }}>
-              <label className="label">Шанс выигрыша: {betChance}% (x{(95/betChance).toFixed(2)})</label>
+              <label className="label">Шанс выигрыша: {betChance}% (x{(100/betChance).toFixed(2)})</label>
               <input
                 type="range"
                 className="slider"
                 value={betChance}
-                onChange={(e) => setBetChance(Number(e.target.value))}
+                onChange={(e) => setBetChance(Math.min(95, Number(e.target.value)))}
                 min="1"
-                max="99"
+                max="95"
                 step="1"
               />
             </div>
@@ -636,7 +637,7 @@ export default function Page() {
             </div>
           </div>
 
-          {/* История выводов (только реальные) */}
+          {/* История выводов */}
           {withdrawHistory.length > 0 && (
             <div className="card">
               <div className="h2">📋 История выводов</div>
@@ -719,7 +720,7 @@ export default function Page() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', opacity: 0.8 }}>
                   <span>Число: {activity.rolled.toLocaleString()}</span>
                   <span style={{ color: activity.result === 'win' ? '#22c55e' : '#ef4444' }}>
-                    {activity.result === 'win' ? `+${activity.payout}₽ (x${(95/activity.chance).toFixed(2)})` : 'Проигрыш'}
+                    {activity.result === 'win' ? `+${activity.payout}₽ (x${(100/activity.chance).toFixed(2)})` : 'Проигрыш'}
                   </span>
                 </div>
               </div>

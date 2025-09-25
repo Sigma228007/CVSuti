@@ -1,11 +1,7 @@
-export const MIN_BET = 1;
-export const MAX_BET = 10_000;
-export const MIN_CHANCE = 1;
 export const MAX_CHANCE = 95;
-
-// дом. преимущество в базисных пунктах (1.50% по умолчанию)
-export const HOUSE_EDGE_BP = Number(process.env.HOUSE_EDGE_BP ?? 150);
-
+export const MIN_CHANCE = 1;
+export const MIN_BET = 10;
+export const MAX_BET = 100000;
 /** База для формирования абсолютных ссылок в уведомлениях админам */
 export function getBaseUrl() {
   // при прод-сборке – из переменной окружения

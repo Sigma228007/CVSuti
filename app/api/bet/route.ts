@@ -8,7 +8,6 @@ import {
   type BetRecord,
 } from "@/lib/store";
 import {
-  HOUSE_EDGE_BP,
   MIN_CHANCE,
   MAX_CHANCE,
   MIN_BET,
@@ -67,7 +66,10 @@ export async function POST(req: NextRequest) {
     const userId = Number(v.user.id);
 
     const amount = Math.floor(Number(body.amount || 0));
-    const chance = Math.max(MIN_CHANCE, Math.min(MAX_CHANCE, Math.floor(Number(body.chance || 0))));
+    
+    // ОГРАНИЧЕНИЕ РИСКА ДО 95%
+    const chance = Math.max(MIN_CHANCE, Math.min(95, Math.floor(Number(body.chance || 0))));
+    
     const dir = body.dir || 'more';
     const notify = body.notify !== false;
     
@@ -91,6 +93,8 @@ export async function POST(req: NextRequest) {
     const r = roll(serverSeed, clientSeed, nonce);
 
     const rolled = r.value; // 1-999999
+    
+    // ПРАВИЛЬНЫЙ РАСЧЕТ ПОРОГА:
     const totalNumbers = 999999;
     const winNumbersCount = Math.floor((chance / 100) * totalNumbers);
     
@@ -105,23 +109,29 @@ export async function POST(req: NextRequest) {
       win = rolled <= winNumbersCount;
     }
 
-    // Расчет выплаты с комиссией 5%
-    const baseMultiplier = 95 / chance; // Комиссия 5%
+    // БЕЗ КОМИССИИ - полный множитель
+    const baseMultiplier = 100 / chance; // Убрана комиссия 5%
     const payout = win ? Math.floor(amount * baseMultiplier) : 0;
 
-    await addBalance(userId, -amount);
-    let won = 0;
+    // ПРАВИЛЬНОЕ ОБНОВЛЕНИЕ БАЛАНСА:
+    let balanceDelta = 0;
     
     if (win) {
-      won = payout;
-      await addBalance(userId, won);
+      // ВЫИГРЫШ: списываем ставку и добавляем выигрыш
+      await addBalance(userId, -amount); // Списываем ставку
+      await addBalance(userId, payout); // Добавляем выигрыш
+      balanceDelta = payout - amount; // Чистый выигрыш
+    } else {
+      // ПРОИГРЫШ: только списываем ставку
+      await addBalance(userId, -amount);
+      balanceDelta = -amount;
     }
 
     const bet: BetRecord = {
       id: `bet_${Date.now()}_${userId}`,
       userId,
       amount,
-      payout: won,
+      payout: win ? payout : 0,
       rolled,
       chance: chance,
       dir,
@@ -138,7 +148,7 @@ export async function POST(req: NextRequest) {
           amount,
           chance: chance,
           result: win ? 'win' : 'lose',
-          payout: won
+          payout: win ? payout : 0
         });
       } catch (notifyError) {
         console.error('Notification error:', notifyError);
@@ -150,8 +160,8 @@ export async function POST(req: NextRequest) {
       result: win ? "win" : "lose",
       chance: chance,
       rolled: rolled,
-      payout: won,
-      balanceDelta: win ? won - amount : -amount,
+      payout: win ? payout : 0,
+      balanceDelta: balanceDelta,
     });
     
   } catch (e: any) {

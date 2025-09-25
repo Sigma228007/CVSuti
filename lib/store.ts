@@ -169,17 +169,27 @@ export async function getBalance(userId: number): Promise<number> {
 
 export async function addBalance(userId: number, delta: number): Promise<void> {
   try {
-    console.log('Adding balance to user:', userId, 'delta:', delta);
+    console.log('Changing balance for user:', userId, 'delta:', delta);
+    
+    if (delta === 0) {
+      console.log('Zero delta, skipping balance update');
+      return;
+    }
+    
+    const currentBalance = await getBalance(userId);
+    console.log('Current balance:', currentBalance);
     
     const result = await redis().hincrbyfloat(kUser(userId), "balance", delta);
     const newBalance = parseFloat(result);
     
+    console.log('New balance after update:', newBalance);
+    
     if (newBalance < 0) {
+      // Откатываем изменение если баланс ушел в минус
       await redis().hincrbyfloat(kUser(userId), "balance", -delta);
       throw new Error("Insufficient balance");
     }
     
-    console.log('New balance after:', newBalance);
   } catch (error) {
     console.error("Error adding balance:", error);
     throw error;
@@ -224,40 +234,54 @@ export async function pushBet(userId: number, bet: BetRecord) {
 }
 
 /** ---------- Deposits ---------- */
-export async function createDepositRequest(
+export async function createWithdrawRequest(
   userId: number,
   amount: number,
-  provider: "fkwallet"
-): Promise<Deposit> {
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error("bad amount");
-  }
+  details: any
+): Promise<Withdraw> {
+  const amt = Math.floor(Number(amount || 0));
+  if (!Number.isFinite(amt) || amt <= 0) throw new Error("bad amount");
+
+  const bal = await getBalance(userId);
+  if (bal < amt) throw new Error("not enough balance");
+
+  // Проверяем, нет ли уже pending заявок
+  const userHistory = await getUserHistory(userId, 10);
+  const pendingWithdraw = userHistory.find((item: any) => 
+    item.type === 'withdraw_pending' || item.type === 'withdraw_pending'
+  );
   
-  const dep: Deposit = {
-    id: randId("dep"),
+  if (pendingWithdraw) {
+    throw new Error("У вас уже есть активная заявка на вывод");
+  }
+
+  // Сначала списываем средства
+  await addBalance(userId, -amt);
+
+  const wd: Withdraw = {
+    id: randId("wd"),
     userId,
-    amount: Math.floor(amount),
+    amount: amt,
+    details: details ?? {},
     status: "pending",
     createdAt: Date.now(),
-    provider,
   };
   
   try {
-    console.log('Creating deposit request:', dep);
-    
     const r = redis();
-    await setJSON(kDep(dep.id), dep);
-    await r.zadd(Z_DEPS_PENDING, dep.createdAt, dep.id);
+    await setJSON(kWd(wd.id), wd);
+    await r.zadd(Z_WDS_PENDING, wd.createdAt, wd.id);
     await pushHistory(userId, { 
-      type: "deposit_pending", 
-      id: dep.id, 
-      amount: dep.amount 
+      type: "withdraw_pending", 
+      id: wd.id, 
+      amount: wd.amount,
+      details: wd.details
     });
-    
-    console.log('Deposit created successfully:', dep.id);
-    return dep;
+    return wd;
   } catch (error) {
-    console.error("Error creating deposit:", error);
+    // Если ошибка при создании заявки, возвращаем средства
+    await addBalance(userId, amt);
+    console.error("Error creating withdraw:", error);
     throw error;
   }
 }
@@ -346,48 +370,6 @@ export async function listPendingDeposits(limit = 50): Promise<Deposit[]> {
 }
 
 /** ---------- Withdrawals ---------- */
-export async function createWithdrawRequest(
-  userId: number,
-  amount: number,
-  details: any
-): Promise<Withdraw> {
-  const amt = Math.floor(Number(amount || 0));
-  if (!Number.isFinite(amt) || amt <= 0) throw new Error("bad amount");
-
-  const bal = await getBalance(userId);
-  if (bal < amt) throw new Error("not enough balance");
-
-  // Сначала списываем средства
-  await addBalance(userId, -amt);
-
-  const wd: Withdraw = {
-    id: randId("wd"),
-    userId,
-    amount: amt,
-    details: details ?? {},
-    status: "pending",
-    createdAt: Date.now(),
-  };
-  
-  try {
-    const r = redis();
-    await setJSON(kWd(wd.id), wd);
-    await r.zadd(Z_WDS_PENDING, wd.createdAt, wd.id);
-    await pushHistory(userId, { 
-      type: "withdraw_pending", 
-      id: wd.id, 
-      amount: wd.amount,
-      details: wd.details
-    });
-    return wd;
-  } catch (error) {
-    // Если ошибка при создании заявки, возвращаем средства
-    await addBalance(userId, amt);
-    console.error("Error creating withdraw:", error);
-    throw error;
-  }
-}
-
 export async function getWithdraw(id: string): Promise<Withdraw | null> {
   try {
     return await getJSON<Withdraw>(kWd(id));
