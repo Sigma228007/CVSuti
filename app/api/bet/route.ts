@@ -37,7 +37,7 @@ function roll(serverSeed: string, clientSeed: string, nonce: number) {
   const data = `${serverSeed}:${clientSeed}:${nonce}`;
   const h = crypto.createHash("sha256").update(data).digest("hex");
   const v = parseInt(h.slice(0, 8), 16);
-  const value = v % 10000; // 0..9999
+  const value = (v % 999999) + 1; // 1-999999
   return { value, hex: h };
 }
 
@@ -84,22 +84,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "not enough balance" }, { status: 400 });
     }
 
-    // РЕАЛЬНЫЙ ШАНС (на 10% меньше заявленного)
-    const realChance = Math.max(0.1, chance * 0.9); // 10% -> 9%, 50% -> 45%, 99% -> 89.1%
-    
+    // ПРАВИЛЬНАЯ ЛОГИКА СТАВОК:
     const serverSeed = process.env.SERVER_SEED || "server_seed";
     const nonce = await incNonce(userId);
     const clientSeed = `${userId}:${nonce}`;
-    const commit = publicCommit(serverSeed);
     const r = roll(serverSeed, clientSeed, nonce);
 
-    const rolled = r.value; // 0..9999
-    const winThreshold = Math.round(realChance * 100); // Используем реальный шанс
-    const win = dir === 'more' ? rolled >= winThreshold : rolled < winThreshold;
+    const rolled = r.value; // 1-999999
+    const totalNumbers = 999999;
+    const winNumbersCount = Math.floor((chance / 100) * totalNumbers);
+    
+    let win = false;
+    
+    if (dir === 'more') {
+      // При "больше": выигрышные числа в конце диапазона
+      const minWinNumber = totalNumbers - winNumbersCount + 1;
+      win = rolled >= minWinNumber;
+    } else {
+      // При "меньше": выигрышные числа в начале диапазона  
+      win = rolled <= winNumbersCount;
+    }
 
     // Расчет выплаты с комиссией 5%
-    const rawPayout = Math.floor((amount * 100) / Math.max(realChance, 1));
-    const payout = Math.floor((rawPayout * 95) / 100);
+    const baseMultiplier = 95 / chance; // Комиссия 5%
+    const payout = win ? Math.floor(amount * baseMultiplier) : 0;
 
     await addBalance(userId, -amount);
     let won = 0;
@@ -115,8 +123,7 @@ export async function POST(req: NextRequest) {
       amount,
       payout: won,
       rolled,
-      chance: chance, // Сохраняем заявленный шанс для истории
-      realChance: realChance, // Сохраняем реальный шанс
+      chance: chance,
       dir,
       win,
       createdAt: Date.now(),
@@ -130,7 +137,6 @@ export async function POST(req: NextRequest) {
           userId,
           amount,
           chance: chance,
-          realChance: realChance,
           result: win ? 'win' : 'lose',
           payout: won
         });
@@ -143,8 +149,7 @@ export async function POST(req: NextRequest) {
       ok: true,
       result: win ? "win" : "lose",
       chance: chance,
-      realChance: realChance,
-      rolled: rolled / 100,
+      rolled: rolled,
       payout: won,
       balanceDelta: win ? won - amount : -amount,
     });

@@ -299,23 +299,32 @@ export default function Page() {
   setLastBetResult(null);
 
   try {
+    // Правильная логика: число от 1 до 999999
     const rolled = Math.floor(Math.random() * 999999) + 1;
     
-    // РЕАЛЬНЫЙ ШАНС (на 10% меньше заявленного)
-    const realChance = Math.max(0.1, betChance * 0.9);
-    const winThreshold = realChance * 10000;
+    // Правильный расчет порога
+    const totalNumbers = 999999;
+    const winNumbersCount = Math.floor((betChance / 100) * totalNumbers);
     
-    const win = betDirection === 'more' ? rolled >= winThreshold : rolled < winThreshold;
+    let win = false;
     
-    // Правильные множители с комиссией 5%
-    const baseMultiplier = (95 / realChance);
+    if (betDirection === 'more') {
+      // При "больше": выигрышные числа в конце диапазона
+      const minWinNumber = totalNumbers - winNumbersCount + 1;
+      win = rolled >= minWinNumber;
+    } else {
+      // При "меньше": выигрышные числа в начале диапазона  
+      win = rolled <= winNumbersCount;
+    }
+    
+    // Правильный множитель с комиссией 5%
+    const baseMultiplier = 95 / betChance;
     const payout = win ? Math.floor(amountNum * baseMultiplier) : 0;
 
     const result: BetResult = {
       ok: true,
       result: win ? 'win' : 'lose',
       chance: betChance,
-      realChance: realChance,
       rolled: rolled,
       payout: payout,
       balanceDelta: win ? payout - amountNum : -amountNum
