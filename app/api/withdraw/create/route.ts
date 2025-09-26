@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readUidFromCookies } from "@/lib/session";
-import { getBalance, addBalance, createWithdrawRequest } from "@/lib/store";
+import { getBalance, createWithdrawRequest } from "@/lib/store"; // Убрали addBalance
 import { notifyWithdrawAdmin } from "@/lib/notify";
 
 export const runtime = "nodejs";
@@ -33,18 +33,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Укажите реквизиты для вывода" }, { status: 400 });
     }
 
-    // Списываем средства с баланса
-    await addBalance(uid, -amt);
+    // Убрали списание средств здесь, т.к. это делается внутри createWithdrawRequest
 
     // Создаем заявку на вывод
     const wd = await createWithdrawRequest(uid, amt, details.trim());
 
-    // Уведомление админу (ОСТАВЛЯЕМ - админ должен подтверждать выводы)
+    // Уведомление админу
     try {
       await notifyWithdrawAdmin(wd);
     } catch (notifyError) {
       console.error('Withdraw notification error:', notifyError);
-      // Не прерываем процесс, даже если уведомление не отправилось
     }
 
     return NextResponse.json({ 

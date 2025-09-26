@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readUidFromCookies } from "@/lib/session";
-import { getWithdraw, declineWithdraw, addBalance } from "@/lib/store";
+import { getWithdraw, cancelWithdrawByUser } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,8 +30,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Withdraw already processed" }, { status: 400 });
     }
 
-    // Отменяем вывод (возвращаем средства)
-    await declineWithdraw(withdraw);
+    // Отменяем вывод (средства возвращаются внутри cancelWithdrawByUser)
+    await cancelWithdrawByUser(withdraw);
 
     return NextResponse.json({ 
       ok: true, 

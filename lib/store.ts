@@ -16,7 +16,7 @@ export function redis(): Redis {
 
 /** ---------- Types ---------- */
 export type DepositStatus = "pending" | "approved" | "declined";
-export type WithdrawStatus = "pending" | "approved" | "declined";
+export type WithdrawStatus = "pending" | "approved" | "declined" | "cancelled"; // Добавили "cancelled"
 
 export type Deposit = {
   id: string;
@@ -242,6 +242,16 @@ export async function createDepositRequest(
   const amt = Math.floor(Number(amount || 0));
   if (!Number.isFinite(amt) || amt <= 0) throw new Error("bad amount");
 
+  // Проверяем, нет ли уже pending депозитов
+  const userHistory = await getUserHistory(userId, 20);
+  const pendingDeposit = userHistory.find((item: any) => 
+    item.type === 'deposit_pending' && item.status === 'pending'
+  );
+  
+  if (pendingDeposit) {
+    throw new Error("У вас уже есть активная заявка на пополнение");
+  }
+
   const dep: Deposit = {
     id: randId("dep"),
     userId,
@@ -259,7 +269,8 @@ export async function createDepositRequest(
       type: "deposit_pending", 
       id: dep.id, 
       amount: dep.amount,
-      provider: dep.provider
+      provider: dep.provider,
+      status: "pending"
     });
     return dep;
   } catch (error) {
@@ -287,6 +298,13 @@ export async function approveDeposit(dep: Deposit): Promise<void> {
   try {
     console.log('Approving deposit:', dep.id, 'for user:', dep.userId, 'amount:', dep.amount);
     
+    // Проверяем, не был ли уже зачислен этот депозит
+    const currentDeposit = await getDeposit(dep.id);
+    if (currentDeposit?.status === "approved") {
+      console.log('Deposit already approved, skipping:', dep.id);
+      return;
+    }
+    
     dep.status = "approved";
     dep.approvedAt = Date.now();
     await setJSON(kDep(dep.id), dep);
@@ -295,7 +313,8 @@ export async function approveDeposit(dep: Deposit): Promise<void> {
     await pushHistory(dep.userId, { 
       type: "deposit_approved", 
       id: dep.id, 
-      amount: dep.amount 
+      amount: dep.amount,
+      status: "approved"
     });
     
     console.log('Deposit approved successfully:', dep.id);
@@ -321,7 +340,8 @@ export async function declineDeposit(dep: Deposit): Promise<void> {
     await pushHistory(dep.userId, { 
       type: "deposit_declined", 
       id: dep.id, 
-      amount: dep.amount 
+      amount: dep.amount,
+      status: "declined"
     });
     
     console.log('Deposit declined successfully:', dep.id);
@@ -363,13 +383,9 @@ export async function createWithdrawRequest(
   const bal = await getBalance(userId);
   if (bal < amt) throw new Error("not enough balance");
 
-  // Проверяем, нет ли уже pending заявок
-  const userHistory = await getUserHistory(userId, 10);
-  const pendingWithdraw = userHistory.find((item: any) => 
-    item.type === 'withdraw_pending' || item.type === 'withdraw_pending'
-  );
-  
-  if (pendingWithdraw) {
+  // Проверяем, нет ли уже pending заявок - ИСПРАВЛЕННАЯ ПРОВЕРКА
+  const pendingWithdrawals = await getUserPendingWithdrawals(userId);
+  if (pendingWithdrawals.length > 0) {
     throw new Error("У вас уже есть активная заявка на вывод");
   }
 
@@ -393,7 +409,8 @@ export async function createWithdrawRequest(
       type: "withdraw_pending", 
       id: wd.id, 
       amount: wd.amount,
-      details: wd.details
+      details: wd.details,
+      status: "pending"
     });
     return wd;
   } catch (error) {
@@ -417,6 +434,7 @@ export async function approveWithdraw(wd: Withdraw): Promise<void> {
   if (wd.status === "approved") return;
   
   try {
+    // Средства уже были списаны при создании заявки, поэтому НЕ списываем повторно
     wd.status = "approved";
     wd.approvedAt = Date.now();
     await setJSON(kWd(wd.id), wd);
@@ -424,7 +442,8 @@ export async function approveWithdraw(wd: Withdraw): Promise<void> {
     await pushHistory(wd.userId, { 
       type: "withdraw_approved", 
       id: wd.id, 
-      amount: wd.amount 
+      amount: wd.amount,
+      status: "approved"
     });
   } catch (error) {
     console.error("Error approving withdraw:", error);
@@ -436,7 +455,7 @@ export async function declineWithdraw(wd: Withdraw): Promise<void> {
   if (wd.status === "declined") return;
   
   try {
-    // Возвращаем средства на баланс
+    // Возвращаем средства при отклонении админом
     await addBalance(wd.userId, wd.amount);
     
     wd.status = "declined";
@@ -446,7 +465,8 @@ export async function declineWithdraw(wd: Withdraw): Promise<void> {
     await pushHistory(wd.userId, { 
       type: "withdraw_declined", 
       id: wd.id, 
-      amount: wd.amount 
+      amount: wd.amount,
+      status: "declined"
     });
   } catch (error) {
     console.error("Error declining withdraw:", error);
@@ -460,17 +480,18 @@ export async function cancelWithdrawByUser(wd: Withdraw): Promise<void> {
   }
   
   try {
-    // Возвращаем средства на баланс
+    // Возвращаем средства при отмене пользователем
     await addBalance(wd.userId, wd.amount);
     
-    wd.status = "declined";
+    wd.status = "cancelled"; // Теперь это валидный статус
     wd.declinedAt = Date.now();
     await setJSON(kWd(wd.id), wd);
     await redis().zrem(Z_WDS_PENDING, wd.id);
     await pushHistory(wd.userId, { 
       type: "withdraw_cancelled", 
       id: wd.id, 
-      amount: wd.amount 
+      amount: wd.amount,
+      status: "cancelled"
     });
   } catch (error) {
     console.error("Error cancelling withdraw:", error);
@@ -493,6 +514,48 @@ export async function listPendingWithdrawals(limit = 50): Promise<Withdraw[]> {
     return out;
   } catch (error) {
     console.error("Error listing pending withdrawals:", error);
+    return [];
+  }
+}
+
+// НОВАЯ ФУНКЦИЯ: Получение pending выводов пользователя
+export async function getUserPendingWithdrawals(userId: number): Promise<Withdraw[]> {
+  try {
+    const allPending = await listPendingWithdrawals(1000);
+    return allPending.filter(wd => wd.userId === userId && wd.status === "pending");
+  } catch (error) {
+    console.error("Error getting user pending withdrawals:", error);
+    return [];
+  }
+}
+
+// НОВАЯ ФУНКЦИЯ: Получение всех выводов пользователя
+export async function getUserWithdrawals(userId: number, limit: number = 50): Promise<Withdraw[]> {
+  try {
+    const userHistory = await getUserHistory(userId, limit * 3);
+    const withdrawIds = new Set<string>();
+    const withdrawals: Withdraw[] = [];
+    
+    // Собираем ID выводов из истории
+    for (const item of userHistory) {
+      if (item.type && item.type.includes('withdraw') && item.id) {
+        withdrawIds.add(item.id);
+      }
+    }
+    
+    // Получаем полные данные о выводе
+    for (const id of withdrawIds) {
+      const withdraw = await getWithdraw(id);
+      if (withdraw && withdraw.userId === userId) {
+        withdrawals.push(withdraw);
+        if (withdrawals.length >= limit) break;
+      }
+    }
+    
+    // Сортируем по дате создания (новые сначала)
+    return withdrawals.sort((a, b) => b.createdAt - a.createdAt);
+  } catch (error) {
+    console.error("Error getting user withdrawals:", error);
     return [];
   }
 }

@@ -14,10 +14,13 @@ type BetResult = {
 
 type WithdrawRequest = {
   id: string;
+  userId: number;
   amount: number;
   details: string;
-  status: 'pending' | 'approved' | 'declined';
+  status: 'pending' | 'approved' | 'declined' | 'cancelled';
   createdAt: number;
+  approvedAt?: number;
+  declinedAt?: number;
 };
 
 type ActivityItem = {
@@ -94,7 +97,6 @@ export default function Page() {
   const [onlineCount, setOnlineCount] = useState<number>(50);
 
   // Refs для защиты от дублирования
-  const dataLoaded = useRef(false);
   const activityInitialized = useRef(false);
 
   // Популярные юзернеймы которые будут повторяться
@@ -131,8 +133,6 @@ export default function Page() {
 
   // Загрузка реальной истории выводов пользователя
   const loadWithdrawHistory = async () => {
-    if (dataLoaded.current) return;
-    
     try {
       const response = await fetch('/api/withdraw/history', {
         headers: getAuthHeaders()
@@ -140,8 +140,10 @@ export default function Page() {
       
       if (response.ok) {
         const data = await response.json();
-        if (data.ok) {
-          setWithdrawHistory(data.history || []);
+        if (data.ok && data.history) {
+          setWithdrawHistory(data.history);
+        } else {
+          setWithdrawHistory([]);
         }
       } else {
         setWithdrawHistory([]);
@@ -167,10 +169,10 @@ export default function Page() {
       const data = await response.json();
 
       if (data.ok) {
-        setWithdrawHistory(prev => prev.filter(req => req.id !== withdrawId));
-        setBalance(prev => prev + data.refundAmount);
-        setMessage('✅ Заявка на вывод отменена');
+        // Перезагружаем историю и баланс
+        await loadWithdrawHistory();
         await fetchBalance();
+        setMessage('✅ Заявка на вывод отменена');
       } else {
         setMessage(`❌ ${data.error || 'Ошибка при отмене вывода'}`);
       }
@@ -227,9 +229,6 @@ export default function Page() {
 
   // Загрузка данных пользователя
   const loadUserData = async () => {
-    if (dataLoaded.current) return;
-    dataLoaded.current = true;
-    
     try {
       const savedUser = localStorage.getItem('tg_user');
       const savedUid = localStorage.getItem('tg_uid');
@@ -403,8 +402,9 @@ export default function Page() {
       const data = await response.json();
 
       if (data.ok) {
-        setWithdrawHistory(prev => [data.withdrawRequest, ...prev]);
-        setBalance(prev => prev - amountNum);
+        // Перезагружаем историю и баланс
+        await loadWithdrawHistory();
+        await fetchBalance();
         setMessage(`✅ Заявка на вывод ${amountNum}₽ создана! Ожидайте подтверждения админа.`);
         setShowWithdrawForm(false);
         setWithdrawDetails('');
@@ -415,6 +415,28 @@ export default function Page() {
       setMessage('❌ Ошибка сети');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Получение статуса вывода в читаемом формате
+  const getWithdrawStatusText = (status: string) => {
+    switch (status) {
+      case 'pending': return '⏳ Ожидание';
+      case 'approved': return '✅ Одобрено';
+      case 'declined': return '❌ Отклонено админом';
+      case 'cancelled': return '❌ Отменено вами';
+      default: return status;
+    }
+  };
+
+  // Получение цвета статуса
+  const getWithdrawStatusColor = (status: string) => {
+    switch (status) {
+      case 'pending': return '#f59e0b';
+      case 'approved': return '#22c55e';
+      case 'declined': return '#ef4444';
+      case 'cancelled': return '#6b7280';
+      default: return '#6b7280';
     }
   };
 
@@ -638,34 +660,33 @@ export default function Page() {
           </div>
 
           {/* История выводов */}
-          {withdrawHistory.length > 0 && (
-            <div className="card">
-              <div className="h2">📋 История выводов</div>
-              <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
-                {withdrawHistory.map((withdraw) => (
+          <div className="card">
+            <div className="h2">📋 История выводов</div>
+            <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+              {withdrawHistory.length > 0 ? (
+                withdrawHistory.map((withdraw) => (
                   <div key={withdraw.id} style={{
                     background: 'rgba(255,255,255,0.03)',
                     padding: '10px',
                     borderRadius: '8px',
                     marginBottom: '8px',
-                    borderLeft: `3px solid ${
-                      withdraw.status === 'approved' ? '#22c55e' : 
-                      withdraw.status === 'declined' ? '#ef4444' : '#f59e0b'
-                    }`
+                    borderLeft: `3px solid ${getWithdrawStatusColor(withdraw.status)}`
                   }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontWeight: 'bold' }}>{withdraw.amount}₽</span>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '5px' }}>
+                      <span style={{ fontWeight: 'bold', fontSize: '14px' }}>{withdraw.amount}₽</span>
                       <span style={{
-                        color: withdraw.status === 'approved' ? '#22c55e' : 
-                               withdraw.status === 'declined' ? '#ef4444' : '#f59e0b',
-                        fontSize: '12px'
+                        color: getWithdrawStatusColor(withdraw.status),
+                        fontSize: '12px',
+                        fontWeight: 'bold'
                       }}>
-                        {withdraw.status === 'approved' ? '✅ Одобрено' : 
-                         withdraw.status === 'declined' ? '❌ Отклонено' : '⏳ Ожидание'}
+                        {getWithdrawStatusText(withdraw.status)}
                       </span>
                     </div>
                     <div style={{ fontSize: '12px', opacity: 0.8, marginBottom: '5px' }}>
                       {withdraw.details}
+                    </div>
+                    <div style={{ fontSize: '10px', opacity: 0.6 }}>
+                      {new Date(withdraw.createdAt).toLocaleDateString('ru-RU')} {new Date(withdraw.createdAt).toLocaleTimeString('ru-RU')}
                     </div>
                     {withdraw.status === 'pending' && (
                       <button
@@ -679,17 +700,27 @@ export default function Page() {
                           borderRadius: '5px',
                           color: '#ef4444',
                           fontSize: '11px',
-                          cursor: 'pointer'
+                          cursor: 'pointer',
+                          marginTop: '5px'
                         }}
                       >
                         ❌ Отменить заявку
                       </button>
                     )}
                   </div>
-                ))}
-              </div>
+                ))
+              ) : (
+                <div style={{ 
+                  textAlign: 'center', 
+                  padding: '20px', 
+                  opacity: 0.7,
+                  fontSize: '14px'
+                }}>
+                  История выводов пуста
+                </div>
+              )}
             </div>
-          )}
+          </div>
         </div>
 
         {/* Правая колонка - Лента активности */}
@@ -738,6 +769,125 @@ export default function Page() {
           <div className="sub">{message}</div>
         </div>
       )}
+
+      <style jsx>{`
+        .container {
+          max-width: 1200px;
+          margin: 0 auto;
+          padding: 16px;
+        }
+        .grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 16px;
+          margin-top: 16px;
+        }
+        .card {
+          background: rgba(255, 255, 255, 0.05);
+          border-radius: 12px;
+          padding: 16px;
+          border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .lift {
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        .center {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          height: 100vh;
+        }
+        .row {
+          display: flex;
+        }
+        .between {
+          justify-content: space-between;
+          align-items: center;
+        }
+        .h1 {
+          font-size: 24px;
+          font-weight: bold;
+          margin-bottom: 4px;
+        }
+        .h2 {
+          font-size: 20px;
+          font-weight: bold;
+          margin-bottom: 4px;
+        }
+        .sub {
+          font-size: 14px;
+          opacity: 0.8;
+        }
+        .label {
+          display: block;
+          margin-bottom: 6px;
+          font-size: 14px;
+          font-weight: 500;
+        }
+        .input {
+          width: 100%;
+          padding: 10px;
+          border-radius: 6px;
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          background: rgba(255, 255, 255, 0.1);
+          color: white;
+          font-size: 14px;
+        }
+        .slider {
+          width: 100%;
+          height: 6px;
+          border-radius: 3px;
+          background: rgba(255, 255, 255, 0.2);
+          outline: none;
+        }
+        .chip {
+          padding: 8px 12px;
+          border-radius: 20px;
+          border: 1px solid rgba(255, 255, 255, 0.3);
+          background: rgba(255, 255, 255, 0.1);
+          color: white;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+        .chip.active {
+          background: rgba(59, 130, 246, 0.5);
+          border-color: rgba(59, 130, 246, 0.8);
+        }
+        .chip:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+        .btn {
+          padding: 12px 16px;
+          border-radius: 8px;
+          border: none;
+          background: linear-gradient(45deg, #3b82f6, #60a5fa);
+          color: white;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+        .btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+        .btn:hover:not(:disabled) {
+          transform: translateY(-1px);
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @media (max-width: 768px) {
+          .grid {
+            grid-template-columns: 1fr;
+          }
+          .container {
+            padding: 8px;
+          }
+        }
+      `}</style>
     </main>
   );
 }

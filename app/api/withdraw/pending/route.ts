@@ -1,25 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readUidFromCookies } from "@/lib/session";
 import { listPendingWithdrawals } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function isAdmin(uid: number | null) {
-  const ids = (process.env.ADMIN_IDS || "").split(",").map((s) => Number(s.trim())).filter(Boolean);
-  return uid != null && ids.includes(uid);
-}
-
-/** Список ожидающих выводов (для админа). */
-export async function POST(req: NextRequest) {
+export async function GET(req: NextRequest) {
   try {
-    const uid = readUidFromCookies(req);
-    if (!isAdmin(uid)) return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+    const pendingWithdrawals = await listPendingWithdrawals(3); // Лимит 3 заявок
 
-    const { limit } = (await req.json().catch(() => ({}))) as { limit?: number };
-    const pending = await listPendingWithdrawals(Math.max(1, Math.min(200, limit || 50)));
-    return NextResponse.json({ ok: true, pending });
+    return NextResponse.json({ 
+      ok: true, 
+      withdrawals: pendingWithdrawals 
+    });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || "pending failed" }, { status: 500 });
+    console.error('Get pending withdrawals error:', e);
+    return NextResponse.json({ ok: false, error: e?.message || "Get pending failed" }, { status: 500 });
   }
 }
