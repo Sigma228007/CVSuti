@@ -16,7 +16,7 @@ export function redis(): Redis {
 
 /** ---------- Types ---------- */
 export type DepositStatus = "pending" | "approved" | "declined";
-export type WithdrawStatus = "pending" | "approved" | "declined" | "cancelled"; // Добавили "cancelled"
+export type WithdrawStatus = "pending" | "approved" | "declined" | "cancelled";
 
 export type Deposit = {
   id: string;
@@ -305,11 +305,13 @@ export async function approveDeposit(dep: Deposit): Promise<void> {
       return;
     }
     
+    // НАЧИСЛЯЕМ баланс только один раз
+    await addBalance(dep.userId, dep.amount);
+    
     dep.status = "approved";
     dep.approvedAt = Date.now();
     await setJSON(kDep(dep.id), dep);
     await redis().zrem(Z_DEPS_PENDING, dep.id);
-    await addBalance(dep.userId, dep.amount);
     await pushHistory(dep.userId, { 
       type: "deposit_approved", 
       id: dep.id, 
@@ -380,16 +382,19 @@ export async function createWithdrawRequest(
   const amt = Math.floor(Number(amount || 0));
   if (!Number.isFinite(amt) || amt <= 0) throw new Error("bad amount");
 
+  // Проверяем минимальную сумму вывода (50 рублей)
+  if (amt < 50) throw new Error("Минимальная сумма вывода 50₽");
+
   const bal = await getBalance(userId);
   if (bal < amt) throw new Error("not enough balance");
 
-  // Проверяем, нет ли уже pending заявок - ИСПРАВЛЕННАЯ ПРОВЕРКА
+  // Проверяем, нет ли уже 3 активных заявок
   const pendingWithdrawals = await getUserPendingWithdrawals(userId);
-  if (pendingWithdrawals.length > 0) {
-    throw new Error("У вас уже есть активная заявка на вывод");
+  if (pendingWithdrawals.length >= 3) {
+    throw new Error("У вас уже есть 3 активные заявки на вывод. Дождитесь их обработки.");
   }
 
-  // Сначала списываем средства
+  // Списание средств при создании заявки
   await addBalance(userId, -amt);
 
   const wd: Withdraw = {
@@ -434,7 +439,7 @@ export async function approveWithdraw(wd: Withdraw): Promise<void> {
   if (wd.status === "approved") return;
   
   try {
-    // Средства уже были списаны при создании заявки, поэтому НЕ списываем повторно
+    // Средства уже были списаны при создании заявки
     wd.status = "approved";
     wd.approvedAt = Date.now();
     await setJSON(kWd(wd.id), wd);
@@ -483,7 +488,7 @@ export async function cancelWithdrawByUser(wd: Withdraw): Promise<void> {
     // Возвращаем средства при отмене пользователем
     await addBalance(wd.userId, wd.amount);
     
-    wd.status = "cancelled"; // Теперь это валидный статус
+    wd.status = "cancelled";
     wd.declinedAt = Date.now();
     await setJSON(kWd(wd.id), wd);
     await redis().zrem(Z_WDS_PENDING, wd.id);
@@ -518,7 +523,7 @@ export async function listPendingWithdrawals(limit = 50): Promise<Withdraw[]> {
   }
 }
 
-// НОВАЯ ФУНКЦИЯ: Получение pending выводов пользователя
+// Получение pending выводов пользователя
 export async function getUserPendingWithdrawals(userId: number): Promise<Withdraw[]> {
   try {
     const allPending = await listPendingWithdrawals(1000);
@@ -529,7 +534,7 @@ export async function getUserPendingWithdrawals(userId: number): Promise<Withdra
   }
 }
 
-// НОВАЯ ФУНКЦИЯ: Получение всех выводов пользователя
+// Получение всех выводов пользователя
 export async function getUserWithdrawals(userId: number, limit: number = 50): Promise<Withdraw[]> {
   try {
     const userHistory = await getUserHistory(userId, limit * 3);

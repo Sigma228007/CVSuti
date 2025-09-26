@@ -381,6 +381,12 @@ export default function Page() {
     const amountNum = parseInt(withdrawAmount);
     if (!uid || !amountNum || amountNum <= 0 || balance < amountNum) return;
     
+    // Проверка минимальной суммы вывода (50 рублей)
+    if (amountNum < 50) {
+      setMessage('❌ Минимальная сумма вывода 50₽');
+      return;
+    }
+    
     if (!withdrawDetails.trim()) {
       setMessage('❌ Укажите реквизиты для вывода');
       return;
@@ -606,7 +612,7 @@ export default function Page() {
             </div>
 
             <div>
-              <label className="label">Вывод средств</label>
+              <label className="label">Вывод средств (мин. 50₽)</label>
               {!showWithdrawForm ? (
                 <div>
                   <input
@@ -615,13 +621,13 @@ export default function Page() {
                     value={withdrawAmount}
                     onChange={(e) => setWithdrawAmount(e.target.value)}
                     placeholder="Введите сумму вывода"
-                    min="10"
+                    min="50"
                     style={{ marginBottom: '10px' }}
                   />
                   <button
                     className="btn"
                     onClick={() => setShowWithdrawForm(true)}
-                    disabled={isLoading || balance < parseInt(withdrawAmount) || !withdrawAmount}
+                    disabled={isLoading || balance < parseInt(withdrawAmount) || !withdrawAmount || parseInt(withdrawAmount) < 50}
                     style={{ width: '100%', background: 'linear-gradient(45deg, #f97316, #fb923c)' }}
                   >
                     🏧 Заказать вывод
