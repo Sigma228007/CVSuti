@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
       details?: string;
     };
 
-    const amt = Math.max(0, Math.floor(Number(amount || 0)));
+    const amt = Math.max(1, Math.floor(Number(amount || 0)));
 
     // Проверяем баланс
     const balance = await getBalance(uid);

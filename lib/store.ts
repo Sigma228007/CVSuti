@@ -71,8 +71,8 @@ const kNonce = (id: number) => `nonce:${id}`;
 
 const Z_DEPS_PENDING = "deps:pending";
 const Z_WDS_PENDING = "wds:pending";
-const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
-const DEPOSIT_PENDING_TIMEOUT_MS = 30 * 60 * 1000;
+const WITHDRAW_PENDING_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+const DEPOSIT_PENDING_TTL_MS = 30 * 60 * 1000;
 /** ---------- Small utils ---------- */
 async function setJSON(key: string, v: any) {
   await redis().set(key, JSON.stringify(v));
@@ -96,7 +96,7 @@ async function pushHistory(userId: number, payload: any, keep = 200) {
 async function cleanupExpiredPendingWithdrawals(): Promise<void> {
   try {
     const r = redis();
-    const threshold = Date.now() - THREE_DAYS_MS;
+    const threshold = Date.now() - WITHDRAW_PENDING_TTL_MS;
     const expiredIds = await r.zrangebyscore(Z_WDS_PENDING, 0, threshold);
     if (!expiredIds.length) return;
 
@@ -138,10 +138,11 @@ async function cleanupExpiredPendingWithdrawals(): Promise<void> {
       await setJSON(kWd(wd.id), wd);
       await r.zrem(Z_WDS_PENDING, id);
       await pushHistory(wd.userId, {
-        type: "withdraw_expired",
+        type: "withdraw_cancelled",
         id: wd.id,
         amount: wd.amount,
         status: "cancelled",
+        auto: true,
       });
     }
   } catch (error) {
@@ -151,7 +152,7 @@ async function cleanupExpiredPendingWithdrawals(): Promise<void> {
 async function cleanupExpiredPendingDeposits(): Promise<void> {
   try {
     const r = redis();
-    const threshold = Date.now() - DEPOSIT_PENDING_TIMEOUT_MS;
+    const threshold = Date.now() - DEPOSIT_PENDING_TTL_MS;
     const expiredIds = await r.zrangebyscore(Z_DEPS_PENDING, 0, threshold);
     if (!expiredIds.length) return;
 
@@ -337,6 +338,7 @@ export async function pushBet(userId: number, bet: BetRecord) {
 /** ---------- Deposits ---------- */
 async function userHasPendingDeposit(userId: number): Promise<boolean> {
   try {
+    await cleanupExpiredPendingDeposits();
     const r = redis();
     const pendingIds = await r.zrange(Z_DEPS_PENDING, 0, -1);
     if (!pendingIds.length) return false;
@@ -367,6 +369,7 @@ export async function createDepositRequest(
   amount: number,
   provider?: string
 ): Promise<Deposit> {
+  await cleanupExpiredPendingDeposits();
   const amt = Math.floor(Number(amount || 0));
   if (!Number.isFinite(amt) || amt <= 0) throw new Error("bad amount");
 
@@ -521,6 +524,7 @@ export async function createWithdrawRequest(
   if (bal < amt) throw new Error("not enough balance");
 
   // Проверяем, нет ли уже 3 активных заявок
+  await cleanupExpiredPendingWithdrawals();
   const pendingWithdrawals = await getUserPendingWithdrawals(userId);
   if (pendingWithdrawals.length >= 3) {
     throw new Error("У вас уже есть 3 активные заявки на вывод. Дождитесь их обработки.");
@@ -658,6 +662,7 @@ export async function listPendingWithdrawals(limit = 50): Promise<Withdraw[]> {
 // Получение pending выводов пользователя
 export async function getUserPendingWithdrawals(userId: number): Promise<Withdraw[]> {
   try {
+    await cleanupExpiredPendingWithdrawals();
     const allPending = await listPendingWithdrawals(1000);
     return allPending.filter(wd => wd.userId === userId && wd.status === "pending");
   } catch (error) {
