@@ -532,12 +532,18 @@ export async function createWithdrawRequest(
 
   // Списание средств при создании заявки
   await addBalance(userId, -amt);
+  const normalizedDetails =
+    typeof details === "string"
+      ? details.trim()
+      : details != null
+        ? JSON.stringify(details)
+        : "";
 
   const wd: Withdraw = {
     id: randId("wd"),
     userId,
     amount: amt,
-    details: details ?? {},
+    details: normalizedDetails,
     status: "pending",
     createdAt: Date.now(),
   };
@@ -550,7 +556,7 @@ export async function createWithdrawRequest(
       type: "withdraw_pending",
       id: wd.id,
       amount: wd.amount,
-      details: wd.details,
+      details: normalizedDetails,
       status: "pending"
     });
     return wd;

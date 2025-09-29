@@ -16,7 +16,7 @@ type WithdrawRequest = {
   id: string;
   userId: number;
   amount: number;
-  details: string;
+  details: string | Record<string, unknown> | null;
   status: 'pending' | 'approved' | 'declined' | 'cancelled';
   createdAt: number;
   approvedAt?: number;
@@ -689,7 +689,9 @@ export default function Page() {
                       </span>
                     </div>
                     <div style={{ fontSize: '12px', opacity: 0.8, marginBottom: '5px' }}>
-                      {withdraw.details}
+                      {typeof withdraw.details === 'string'
+                        ? withdraw.details
+                        : JSON.stringify(withdraw.details)}
                     </div>
                     <div style={{ fontSize: '10px', opacity: 0.6 }}>
                       {new Date(withdraw.createdAt).toLocaleDateString('ru-RU')} {new Date(withdraw.createdAt).toLocaleTimeString('ru-RU')}
