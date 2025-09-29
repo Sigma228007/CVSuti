@@ -71,7 +71,8 @@ const kNonce = (id: number) => `nonce:${id}`;
 
 const Z_DEPS_PENDING = "deps:pending";
 const Z_WDS_PENDING = "wds:pending";
-
+const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
+const DEPOSIT_PENDING_TIMEOUT_MS = 30 * 60 * 1000;
 /** ---------- Small utils ---------- */
 async function setJSON(key: string, v: any) {
   await redis().set(key, JSON.stringify(v));
@@ -92,7 +93,107 @@ async function pushHistory(userId: number, payload: any, keep = 200) {
   await r.lpush(kHist(userId), JSON.stringify({ ...payload, ts: Date.now() }));
   await r.ltrim(kHist(userId), 0, keep - 1);
 }
+async function cleanupExpiredPendingWithdrawals(): Promise<void> {
+  try {
+    const r = redis();
+    const threshold = Date.now() - THREE_DAYS_MS;
+    const expiredIds = await r.zrangebyscore(Z_WDS_PENDING, 0, threshold);
+    if (!expiredIds.length) return;
 
+    const pipe = r.pipeline();
+    expiredIds.forEach((id) => pipe.get(kWd(id)));
+    const rows = (await pipe.exec()) as Array<[Error | null, string | null]>;
+
+    for (let i = 0; i < expiredIds.length; i++) {
+      const id = expiredIds[i];
+      const [, data] = rows[i] || [];
+      if (!data) {
+        await r.zrem(Z_WDS_PENDING, id);
+        continue;
+      }
+
+      let wd: Withdraw | null = null;
+      try {
+        wd = JSON.parse(data) as Withdraw;
+      } catch (error) {
+        console.error("Failed to parse withdraw during cleanup:", error);
+      }
+
+      if (!wd || wd.status !== "pending") {
+        await r.zrem(Z_WDS_PENDING, id);
+        continue;
+      }
+
+      if (wd.createdAt > threshold) continue;
+
+      try {
+        await addBalance(wd.userId, wd.amount);
+      } catch (balanceError) {
+        console.error("Error refunding expired withdraw:", balanceError);
+        continue;
+      }
+
+      wd.status = "cancelled";
+      wd.declinedAt = Date.now();
+      await setJSON(kWd(wd.id), wd);
+      await r.zrem(Z_WDS_PENDING, id);
+      await pushHistory(wd.userId, {
+        type: "withdraw_expired",
+        id: wd.id,
+        amount: wd.amount,
+        status: "cancelled",
+      });
+    }
+  } catch (error) {
+    console.error("Error cleaning up expired withdrawals:", error);
+  }
+}
+async function cleanupExpiredPendingDeposits(): Promise<void> {
+  try {
+    const r = redis();
+    const threshold = Date.now() - DEPOSIT_PENDING_TIMEOUT_MS;
+    const expiredIds = await r.zrangebyscore(Z_DEPS_PENDING, 0, threshold);
+    if (!expiredIds.length) return;
+
+    const pipe = r.pipeline();
+    expiredIds.forEach((id) => pipe.get(kDep(id)));
+    const rows = (await pipe.exec()) as Array<[Error | null, string | null]>;
+
+    for (let i = 0; i < expiredIds.length; i++) {
+      const id = expiredIds[i];
+      const payload = rows[i]?.[1];
+
+      if (!payload) {
+        await r.zrem(Z_DEPS_PENDING, id);
+        continue;
+      }
+
+      try {
+        const dep = JSON.parse(payload) as Deposit;
+        if (dep.status !== "pending") {
+          await r.zrem(Z_DEPS_PENDING, id);
+          continue;
+        }
+
+        dep.status = "declined";
+        dep.declinedAt = Date.now();
+        await setJSON(kDep(dep.id), dep);
+        await r.zrem(Z_DEPS_PENDING, dep.id);
+        await pushHistory(dep.userId, {
+          type: "deposit_declined",
+          id: dep.id,
+          amount: dep.amount,
+          status: "declined",
+        });
+      } catch (error) {
+        console.error("Error auto-declining deposit:", error);
+        await r.zrem(Z_DEPS_PENDING, id);
+      }
+    }
+  } catch (error) {
+    console.error("Error cleaning up expired deposits:", error);
+  }
+}
 /** ---------- Users / Balance ---------- */
 export async function userExists(userId: number): Promise<boolean> {
   try {
