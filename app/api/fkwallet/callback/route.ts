@@ -82,9 +82,13 @@ export async function POST(req: NextRequest) {
 
     console.log('🔄 Approving deposit automatically...');
     await approveDeposit(deposit);
-    await addBalance(deposit.userId, deposit.amount);
-    
-    console.log('✅ Deposit approved and balance updated');
+    console.log('✅ Deposit approved and balance updated:', {
+      id: deposit.id,
+      userId: deposit.userId,
+      amount: deposit.amount,
+      status: deposit.status,
+      approvedAt: deposit.approvedAt,
+    });
 
     try {
       await notifyUserDepositApproved(deposit);
