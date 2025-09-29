@@ -7,8 +7,8 @@ export function redis(): Redis {
   if (_r) return _r;
   const url = process.env.REDIS_URL;
   if (!url) throw new Error("REDIS_URL is not set");
-  _r = new Redis(url, { 
-    maxRetriesPerRequest: 2, 
+  _r = new Redis(url, {
+    maxRetriesPerRequest: 2,
     lazyConnect: false,
   });
   return _r;
@@ -107,7 +107,7 @@ export async function getUser(userId: number): Promise<UserRecord | null> {
   try {
     const userData = await redis().hgetall(kUser(userId));
     if (!userData || !userData.id) return null;
-    
+
     return {
       id: parseInt(userData.id),
       first_name: userData.first_name || undefined,
@@ -125,10 +125,10 @@ export async function getUser(userId: number): Promise<UserRecord | null> {
 export async function ensureUser(u: { id: number; first_name?: string; username?: string }) {
   const r = redis();
   const key = kUser(u.id);
-  
+
   try {
     const exists = await userExists(u.id);
-    
+
     if (!exists) {
       await r.hset(key, {
         "id": String(u.id),
@@ -143,11 +143,11 @@ export async function ensureUser(u: { id: number; first_name?: string; username?
       const updates: Record<string, string> = {};
       if (u.first_name) updates.first_name = u.first_name;
       if (u.username) updates.username = u.username;
-      
+
       if (Object.keys(updates).length > 0) {
         await r.hset(key, updates);
       }
-      
+
       await r.hset(key, "lastSeenAt", String(Date.now()));
     }
   } catch (error) {
@@ -170,26 +170,26 @@ export async function getBalance(userId: number): Promise<number> {
 export async function addBalance(userId: number, delta: number): Promise<void> {
   try {
     console.log('Changing balance for user:', userId, 'delta:', delta);
-    
+
     if (delta === 0) {
       console.log('Zero delta, skipping balance update');
       return;
     }
-    
+
     const currentBalance = await getBalance(userId);
     console.log('Current balance:', currentBalance);
-    
+
     const result = await redis().hincrbyfloat(kUser(userId), "balance", delta);
     const newBalance = parseFloat(result);
-    
+
     console.log('New balance after update:', newBalance);
-    
+
     if (newBalance < 0) {
       // Откатываем изменение если баланс ушел в минус
       await redis().hincrbyfloat(kUser(userId), "balance", -delta);
       throw new Error("Insufficient balance");
     }
-    
+
   } catch (error) {
     console.error("Error adding balance:", error);
     throw error;
@@ -200,12 +200,12 @@ export async function getUserHistory(userId: number, limit: number = 50): Promis
   try {
     const raw = await redis().lrange(kHist(userId), 0, limit - 1);
     return raw.map((s) => {
-      try { 
+      try {
         const item = JSON.parse(s);
         item.userId = userId;
         return item;
-      } catch { 
-        return null; 
+      } catch {
+        return null;
       }
     }).filter(Boolean).reverse();
   } catch (error) {
@@ -216,7 +216,7 @@ export async function getUserHistory(userId: number, limit: number = 50): Promis
 
 export async function pushBet(userId: number, bet: BetRecord) {
   try {
-    await pushHistory(userId, { 
+    await pushHistory(userId, {
       type: "bet",
       id: bet.id,
       amount: bet.amount,
@@ -317,31 +317,31 @@ export async function approveDeposit(dep: Deposit): Promise<void> {
     console.log('Deposit already approved:', dep.id);
     return;
   }
-  
+
   try {
     console.log('Approving deposit:', dep.id, 'for user:', dep.userId, 'amount:', dep.amount);
-    
+
     // Проверяем, не был ли уже зачислен этот депозит
     const currentDeposit = await getDeposit(dep.id);
     if (currentDeposit?.status === "approved") {
       console.log('Deposit already approved, skipping:', dep.id);
       return;
     }
-    
+
     // НАЧИСЛЯЕМ баланс только один раз
     await addBalance(dep.userId, dep.amount);
-    
+
     dep.status = "approved";
     dep.approvedAt = Date.now();
     await setJSON(kDep(dep.id), dep);
     await redis().zrem(Z_DEPS_PENDING, dep.id);
-    await pushHistory(dep.userId, { 
-      type: "deposit_approved", 
-      id: dep.id, 
+    await pushHistory(dep.userId, {
+      type: "deposit_approved",
+      id: dep.id,
       amount: dep.amount,
       status: "approved"
     });
-    
+
     console.log('Deposit approved successfully:', dep.id);
   } catch (error) {
     console.error("Error approving deposit:", error);
@@ -354,21 +354,21 @@ export async function declineDeposit(dep: Deposit): Promise<void> {
     console.log('Deposit already declined:', dep.id);
     return;
   }
-  
+
   try {
     console.log('Declining deposit:', dep.id);
-    
+
     dep.status = "declined";
     dep.declinedAt = Date.now();
     await setJSON(kDep(dep.id), dep);
     await redis().zrem(Z_DEPS_PENDING, dep.id);
-    await pushHistory(dep.userId, { 
-      type: "deposit_declined", 
-      id: dep.id, 
+    await pushHistory(dep.userId, {
+      type: "deposit_declined",
+      id: dep.id,
       amount: dep.amount,
       status: "declined"
     });
-    
+
     console.log('Deposit declined successfully:', dep.id);
   } catch (error) {
     console.error("Error declining deposit:", error);
@@ -381,14 +381,14 @@ export async function listPendingDeposits(limit = 50): Promise<Deposit[]> {
     const r = redis();
     const ids = await r.zrevrange(Z_DEPS_PENDING, 0, Math.max(0, limit - 1));
     if (!ids.length) return [];
-    
+
     const pipe = r.pipeline();
     ids.forEach((id) => pipe.get(kDep(id)));
     const rows = (await pipe.exec()) as Array<[Error | null, string | null]>;
-    
+
     const out: Deposit[] = [];
     rows.forEach(([, s]) => { if (s) try { out.push(JSON.parse(s)); } catch {} });
-    
+
     return out;
   } catch (error) {
     console.error("Error listing pending deposits:", error);
@@ -397,6 +397,15 @@ export async function listPendingDeposits(limit = 50): Promise<Deposit[]> {
 }
 
 /** ---------- Withdrawals ---------- */
+export const MIN_WITHDRAW_AMOUNT = 50;
+
+export class WithdrawAmountTooSmallError extends Error {
+  constructor() {
+    super(`Минимальная сумма вывода ${MIN_WITHDRAW_AMOUNT}₽`);
+    this.name = "WithdrawAmountTooSmallError";
+  }
+}
+
 export async function createWithdrawRequest(
   userId: number,
   amount: number,
@@ -405,8 +414,7 @@ export async function createWithdrawRequest(
   const amt = Math.floor(Number(amount || 0));
   if (!Number.isFinite(amt) || amt <= 0) throw new Error("bad amount");
 
-  // Проверяем минимальную сумму вывода (50 рублей)
-  if (amt < 50) throw new Error("Минимальная сумма вывода 50₽");
+  if (amt < MIN_WITHDRAW_AMOUNT) throw new WithdrawAmountTooSmallError();
 
   const bal = await getBalance(userId);
   if (bal < amt) throw new Error("not enough balance");
@@ -428,14 +436,14 @@ export async function createWithdrawRequest(
     status: "pending",
     createdAt: Date.now(),
   };
-  
+
   try {
     const r = redis();
     await setJSON(kWd(wd.id), wd);
     await r.zadd(Z_WDS_PENDING, wd.createdAt, wd.id);
-    await pushHistory(userId, { 
-      type: "withdraw_pending", 
-      id: wd.id, 
+    await pushHistory(userId, {
+      type: "withdraw_pending",
+      id: wd.id,
       amount: wd.amount,
       details: wd.details,
       status: "pending"
@@ -460,16 +468,16 @@ export async function getWithdraw(id: string): Promise<Withdraw | null> {
 
 export async function approveWithdraw(wd: Withdraw): Promise<void> {
   if (wd.status === "approved") return;
-  
+
   try {
     // Средства уже были списаны при создании заявки
     wd.status = "approved";
     wd.approvedAt = Date.now();
     await setJSON(kWd(wd.id), wd);
     await redis().zrem(Z_WDS_PENDING, wd.id);
-    await pushHistory(wd.userId, { 
-      type: "withdraw_approved", 
-      id: wd.id, 
+    await pushHistory(wd.userId, {
+      type: "withdraw_approved",
+      id: wd.id,
       amount: wd.amount,
       status: "approved"
     });
@@ -481,18 +489,18 @@ export async function approveWithdraw(wd: Withdraw): Promise<void> {
 
 export async function declineWithdraw(wd: Withdraw): Promise<void> {
   if (wd.status === "declined") return;
-  
+
   try {
     // Возвращаем средства при отклонении админом
     await addBalance(wd.userId, wd.amount);
-    
+
     wd.status = "declined";
     wd.declinedAt = Date.now();
     await setJSON(kWd(wd.id), wd);
     await redis().zrem(Z_WDS_PENDING, wd.id);
-    await pushHistory(wd.userId, { 
-      type: "withdraw_declined", 
-      id: wd.id, 
+    await pushHistory(wd.userId, {
+      type: "withdraw_declined",
+      id: wd.id,
       amount: wd.amount,
       status: "declined"
     });
@@ -506,18 +514,18 @@ export async function cancelWithdrawByUser(wd: Withdraw): Promise<void> {
   if (wd.status !== "pending") {
     throw new Error("Cannot cancel processed withdraw");
   }
-  
+
   try {
     // Возвращаем средства при отмене пользователем
     await addBalance(wd.userId, wd.amount);
-    
+
     wd.status = "cancelled";
     wd.declinedAt = Date.now();
     await setJSON(kWd(wd.id), wd);
     await redis().zrem(Z_WDS_PENDING, wd.id);
-    await pushHistory(wd.userId, { 
-      type: "withdraw_cancelled", 
-      id: wd.id, 
+    await pushHistory(wd.userId, {
+      type: "withdraw_cancelled",
+      id: wd.id,
       amount: wd.amount,
       status: "cancelled"
     });
@@ -532,11 +540,11 @@ export async function listPendingWithdrawals(limit = 50): Promise<Withdraw[]> {
     const r = redis();
     const ids = await r.zrevrange(Z_WDS_PENDING, 0, Math.max(0, limit - 1));
     if (!ids.length) return [];
-    
+
     const pipe = r.pipeline();
     ids.forEach((id) => pipe.get(kWd(id)));
     const rows = (await pipe.exec()) as Array<[Error | null, string | null]>;
-    
+
     const out: Withdraw[] = [];
     rows.forEach(([, s]) => { if (s) try { out.push(JSON.parse(s)); } catch {} });
     return out;
@@ -563,14 +571,14 @@ export async function getUserWithdrawals(userId: number, limit: number = 50): Pr
     const userHistory = await getUserHistory(userId, limit * 3);
     const withdrawIds = new Set<string>();
     const withdrawals: Withdraw[] = [];
-    
+
     // Собираем ID выводов из истории
     for (const item of userHistory) {
       if (item.type && item.type.includes('withdraw') && item.id) {
         withdrawIds.add(item.id);
       }
     }
-    
+
     // Получаем полные данные о выводе
     for (const id of withdrawIds) {
       const withdraw = await getWithdraw(id);
@@ -579,7 +587,7 @@ export async function getUserWithdrawals(userId: number, limit: number = 50): Pr
         if (withdrawals.length >= limit) break;
       }
     }
-    
+
     // Сортируем по дате создания (новые сначала)
     return withdrawals.sort((a, b) => b.createdAt - a.createdAt);
   } catch (error) {

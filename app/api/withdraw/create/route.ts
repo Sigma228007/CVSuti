@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readUidFromCookies } from "@/lib/session";
-import { getBalance, createWithdrawRequest } from "@/lib/store"; // Убрали addBalance
+import {
+  getBalance,
+  createWithdrawRequest,
+  MIN_WITHDRAW_AMOUNT,
+  WithdrawAmountTooSmallError,
+} from "@/lib/store"; // Убрали addBalance
 import { notifyWithdrawAdmin } from "@/lib/notify";
 
 export const runtime = "nodejs";
@@ -16,8 +21,8 @@ export async function POST(req: NextRequest) {
       details?: string;
     };
 
-    const amt = Math.max(1, Math.floor(Number(amount || 0)));
-    
+    const amt = Math.max(0, Math.floor(Number(amount || 0)));
+
     // Проверяем баланс
     const balance = await getBalance(uid);
     if (balance < amt) {
@@ -25,8 +30,11 @@ export async function POST(req: NextRequest) {
     }
 
     // Проверяем минимальную сумму вывода
-    if (amt < 10) {
-      return NextResponse.json({ ok: false, error: "Минимальная сумма вывода 10₽" }, { status: 400 });
+    if (amt < MIN_WITHDRAW_AMOUNT) {
+      return NextResponse.json(
+        { ok: false, error: `Минимальная сумма вывода ${MIN_WITHDRAW_AMOUNT}₽` },
+        { status: 422 }
+      );
     }
 
     if (!details || details.trim().length === 0) {
@@ -45,13 +53,21 @@ export async function POST(req: NextRequest) {
       console.error('Withdraw notification error:', notifyError);
     }
 
-    return NextResponse.json({ 
-      ok: true, 
+    return NextResponse.json({
+      ok: true,
       withdrawRequest: wd,
       message: "Заявка на вывод создана. Ожидайте подтверждения админа."
     });
   } catch (e: any) {
     console.error('Withdraw create error:', e);
+
+    if (e instanceof WithdrawAmountTooSmallError) {
+      return NextResponse.json(
+        { ok: false, error: e.message },
+        { status: 422 }
+      );
+    }
+
     return NextResponse.json({ ok: false, error: e?.message || "Ошибка создания заявки" }, { status: 500 });
   }
 }
