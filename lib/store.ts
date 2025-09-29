@@ -234,6 +234,34 @@ export async function pushBet(userId: number, bet: BetRecord) {
 }
 
 /** ---------- Deposits ---------- */
+/** ---------- Deposits ---------- */
+async function userHasPendingDeposit(userId: number): Promise<boolean> {
+  try {
+    const r = redis();
+    const pendingIds = await r.zrange(Z_DEPS_PENDING, 0, -1);
+    if (!pendingIds.length) return false;
+
+    const pipe = r.pipeline();
+    pendingIds.forEach((id) => pipe.get(kDep(id)));
+    const rows = (await pipe.exec()) as Array<[Error | null, string | null]>;
+
+    for (const [, payload] of rows) {
+      if (!payload) continue;
+      try {
+        const dep = JSON.parse(payload) as Deposit;
+        if (dep.userId === userId && dep.status === "pending") {
+          return true;
+        }
+      } catch (error) {
+        console.error("Error parsing pending deposit payload:", error);
+      }
+    }
+  } catch (error) {
+    console.error("Error checking pending deposits:", error);
+  }
+  return false;
+}
+
 export async function createDepositRequest(
   userId: number,
   amount: number,
@@ -242,14 +270,10 @@ export async function createDepositRequest(
   const amt = Math.floor(Number(amount || 0));
   if (!Number.isFinite(amt) || amt <= 0) throw new Error("bad amount");
 
-  // Проверяем, нет ли уже pending депозитов
-  const userHistory = await getUserHistory(userId, 20);
-  const pendingDeposit = userHistory.find((item: any) => 
-    item.type === 'deposit_pending' && item.status === 'pending'
-  );
-  
-  if (pendingDeposit) {
-    throw new Error("У вас уже есть активная заявка на пополнение");
+  if (await userHasPendingDeposit(userId)) {
+    const err: any = new Error("У вас уже есть активная заявка на пополнение");
+    err.code = "DEPOSIT_PENDING";
+    throw err;
   }
 
   const dep: Deposit = {
@@ -260,14 +284,14 @@ export async function createDepositRequest(
     createdAt: Date.now(),
     provider: provider as "fkwallet" | undefined,
   };
-  
+
   try {
     const r = redis();
     await setJSON(kDep(dep.id), dep);
     await r.zadd(Z_DEPS_PENDING, dep.createdAt, dep.id);
-    await pushHistory(userId, { 
-      type: "deposit_pending", 
-      id: dep.id, 
+    await pushHistory(userId, {
+      type: "deposit_pending",
+      id: dep.id,
       amount: dep.amount,
       provider: dep.provider,
       status: "pending"
@@ -278,101 +302,6 @@ export async function createDepositRequest(
     throw error;
   }
 }
-
-export async function getDeposit(id: string): Promise<Deposit | null> {
-  try {
-    const deposit = await getJSON<Deposit>(kDep(id));
-    return deposit;
-  } catch (error) {
-    console.error("Error getting deposit:", error);
-    return null;
-  }
-}
-
-export async function approveDeposit(dep: Deposit): Promise<void> {
-  if (dep.status === "approved") {
-    console.log('Deposit already approved:', dep.id);
-    return;
-  }
-  
-  try {
-    console.log('Approving deposit:', dep.id, 'for user:', dep.userId, 'amount:', dep.amount);
-    
-    // Проверяем, не был ли уже зачислен этот депозит
-    const currentDeposit = await getDeposit(dep.id);
-    if (currentDeposit?.status === "approved") {
-      console.log('Deposit already approved, skipping:', dep.id);
-      return;
-    }
-    
-    // НАЧИСЛЯЕМ баланс только один раз
-    await addBalance(dep.userId, dep.amount);
-    
-    dep.status = "approved";
-    dep.approvedAt = Date.now();
-    await setJSON(kDep(dep.id), dep);
-    await redis().zrem(Z_DEPS_PENDING, dep.id);
-    await pushHistory(dep.userId, { 
-      type: "deposit_approved", 
-      id: dep.id, 
-      amount: dep.amount,
-      status: "approved"
-    });
-    
-    console.log('Deposit approved successfully:', dep.id);
-  } catch (error) {
-    console.error("Error approving deposit:", error);
-    throw error;
-  }
-}
-
-export async function declineDeposit(dep: Deposit): Promise<void> {
-  if (dep.status === "declined") {
-    console.log('Deposit already declined:', dep.id);
-    return;
-  }
-  
-  try {
-    console.log('Declining deposit:', dep.id);
-    
-    dep.status = "declined";
-    dep.declinedAt = Date.now();
-    await setJSON(kDep(dep.id), dep);
-    await redis().zrem(Z_DEPS_PENDING, dep.id);
-    await pushHistory(dep.userId, { 
-      type: "deposit_declined", 
-      id: dep.id, 
-      amount: dep.amount,
-      status: "declined"
-    });
-    
-    console.log('Deposit declined successfully:', dep.id);
-  } catch (error) {
-    console.error("Error declining deposit:", error);
-    throw error;
-  }
-}
-
-export async function listPendingDeposits(limit = 50): Promise<Deposit[]> {
-  try {
-    const r = redis();
-    const ids = await r.zrevrange(Z_DEPS_PENDING, 0, Math.max(0, limit - 1));
-    if (!ids.length) return [];
-    
-    const pipe = r.pipeline();
-    ids.forEach((id) => pipe.get(kDep(id)));
-    const rows = (await pipe.exec()) as Array<[Error | null, string | null]>;
-    
-    const out: Deposit[] = [];
-    rows.forEach(([, s]) => { if (s) try { out.push(JSON.parse(s)); } catch {} });
-    
-    return out;
-  } catch (error) {
-    console.error("Error listing pending deposits:", error);
-    return [];
-  }
-}
-
 /** ---------- Withdrawals ---------- */
 export async function createWithdrawRequest(
   userId: number,
