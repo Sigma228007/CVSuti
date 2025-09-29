@@ -98,6 +98,42 @@ export default function Page() {
 
   // Refs для защиты от дублирования
   const activityInitialized = useRef(false);
+  const lastActivityAmountRef = useRef<number>(100);
+
+  const getNextActivityAmount = () => {
+    const prev = lastActivityAmountRef.current ?? 100;
+    let amount = prev;
+    const roll = Math.random();
+
+    if (roll < 0.5) {
+      amount = 100 + Math.round((Math.random() - 0.5) * 80);
+    } else if (roll < 0.75) {
+      const pool = [25, 30, 40, 50, 60, 75, 90, 110, 130, 150, 180, 200];
+      amount = pool[Math.floor(Math.random() * pool.length)];
+    } else if (roll < 0.92) {
+      const pool = [210, 220, 240, 260, 280, 300, 320, 350, 380, 400, 450, 500];
+      amount = pool[Math.floor(Math.random() * pool.length)];
+    } else if (roll < 0.985) {
+      const pool = [550, 600, 650, 700, 750, 800, 900, 1000];
+      amount = pool[Math.floor(Math.random() * pool.length)];
+    } else {
+      const pool = [1200, 1500, 1800, 2000, 2200, 2500, 2800, 3000];
+      amount = pool[Math.floor(Math.random() * pool.length)];
+    }
+
+    if (Math.random() < 0.2) {
+      amount = prev;
+    }
+
+    if (Math.random() < 0.05) {
+      const lows = [10, 15, 20, 25, 30, 35, 40, 45];
+      amount = lows[Math.floor(Math.random() * lows.length)];
+    }
+
+    amount = Math.max(10, Math.min(3000, Math.round(amount / 5) * 5));
+    lastActivityAmountRef.current = amount;
+    return amount;
+  };
 
   // Популярные юзернеймы которые будут повторяться
   const popularUsernames = [
@@ -199,14 +235,18 @@ export default function Page() {
     } else {
       win = rolled <= winNumbersCount;
     }
-    
+    const amount = betData?.amount ?? getNextActivityAmount();
+
+    if (betData?.amount) {
+      lastActivityAmountRef.current = amount;
+    }
     const baseMultiplier = 100 / chance;
-    const payout = win ? Math.floor((betData?.amount || 100) * baseMultiplier) : 0;
+     const payout = win ? Math.floor(amount * baseMultiplier) : 0;
     
     return {
       id: `game_${Date.now()}_${Math.random()}`,
       player: isUserBet ? (userData?.first_name || 'Вы') : generateUsername(),
-      amount: betData?.amount || 100,
+      amount,
       result: win ? 'win' : 'lose',
       payout: payout,
       chance: chance,
@@ -613,6 +653,9 @@ export default function Page() {
 
             <div>
               <label className="label">Вывод средств (мин. 50₽)</label>
+              <div style={{ fontSize: '12px', opacity: 0.7, marginBottom: '8px' }}>
+                Укажите свой FKWallet кошелек — вывод доступен только на него.
+              </div>
               {!showWithdrawForm ? (
                 <div>
                   <input
@@ -640,7 +683,7 @@ export default function Page() {
                     className="input"
                     value={withdrawDetails}
                     onChange={(e) => setWithdrawDetails(e.target.value)}
-                    placeholder="Введите реквизиты (карта, кошелек)"
+                    placeholder="Укажите свой FKWallet кошелек"
                     style={{ marginBottom: '10px' }}
                   />
                   <div style={{ display: 'flex', gap: '8px' }}>
