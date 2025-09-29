@@ -45,7 +45,7 @@ export function verifyInitData(
     }
 
     const user = JSON.parse(decodeURIComponent(userStr)) as TgUser;
-    
+
     if (!user || typeof user.id !== "number") {
       return { ok: false, error: "Invalid user data" };
     }
@@ -109,8 +109,21 @@ export function verifyAdminLink(
 export function verifyAdminSignature(payload: any, signature: string): boolean {
   try {
     const key = process.env.ADMIN_SIGN_KEY || "default_key";
-    const expectedSignature = signAdminPayload(payload, key);
-    return expectedSignature === signature;
+    const verification = verifyAdminLink(signature, key);
+    if (!verification.ok) {
+      return false;
+    }
+
+    const signedPayload = verification.payload ?? {};
+    if (!payload || typeof payload !== "object") {
+      return true;
+    }
+
+    return Object.entries(payload).every(([field, value]) => {
+      return Object.prototype.hasOwnProperty.call(signedPayload, field)
+        ? signedPayload[field] === value
+        : false;
+    });
   } catch (error) {
     console.error('Error verifying admin signature:', error);
     return false;
